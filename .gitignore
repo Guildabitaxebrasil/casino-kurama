@@ -35,5 +35,9 @@ python-embed/
 .env
 .env.local
 
+# Build artifacts
+ts_errors.txt
+ts_out.txt
+
 # Logs
 *.log
