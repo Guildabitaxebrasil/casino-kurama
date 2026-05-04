@@ -1,0 +1,17 @@
+# Blockchain - Dependências do Projeto
+# Instale com: pip install -r requirements.txt
+
+# Framework web para API REST
+Flask==3.1.0
+
+# Suporte a CORS (Cross-Origin Resource Sharing)
+Flask-Cors==5.0.1
+
+# Cliente HTTP para comunicação entre nós
+requests==2.32.3
+
+# Criptografia de Curva Elíptica (ECDSA) - mesma curva do Bitcoin
+ecdsa==0.19.1
+
+# Codificação Base58 - formato de endereços estilo Bitcoin
+base58==2.1.1
