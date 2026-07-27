@@ -385,7 +385,7 @@ python -m pytest tests/test_repository.py -v    # Persistência
 
 ## 📄 Licença
 
-Este projeto é **open source** e educacional — construído para demonstrar conceitos fundamentais de blockchain, criptografia, finanças descentralizadas e desenvolvimento full-stack.
+Todos os direitos reservados. KuramaChain é uma plataforma de cassino descentralizado com blockchain própria, desenvolvida para operação real com criptomoedas.
 
 ---
 
@@ -393,5 +393,5 @@ Este projeto é **open source** e educacional — construído para demonstrar co
   <strong>KuramaChain</strong> — Python · Flask · React · TypeScript · TailwindCSS · Polygon · Lightning Network
 </p>
 <p align="center">
-  <sub>Feito com ☕ e blockchain</sub>
+  <sub>💰 Jogue com responsabilidade</sub>
 </p>
