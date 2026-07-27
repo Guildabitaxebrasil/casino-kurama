@@ -1,9 +1,13 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import TransactionTable from '../components/TransactionTable';
 import { getBalance, newWallet, getAllTransactions } from '../api/client';
+import { saveWallet } from '../utils/walletStorage';
+import { getCachedBalance, setCachedBalance } from '../utils/balanceCache';
+import { useWallet } from '../context/WalletContext';
 import type { Transaction } from '../api/types';
 
 export default function Wallet() {
+  const { currentAddress, isConnected, connect } = useWallet();
   const [address, setAddress] = useState('');
   const [queryAddress, setQueryAddress] = useState('');
   const [balance, setBalance] = useState<number | null>(null);
@@ -14,10 +18,24 @@ export default function Wallet() {
   const [showWallet, setShowWallet] = useState(false);
   const [generatedWallet, setGeneratedWallet] = useState<any>(null);
 
+  // Se tem uma carteira conectada, carrega automaticamente
+  useEffect(() => {
+    if (isConnected && currentAddress && !queryAddress) {
+      setAddress(currentAddress);
+      setQueryAddress(currentAddress);
+    }
+  }, [isConnected, currentAddress]);
+
   const fetchWalletData = (addr: string) => {
     setLoading(true);
     setError('');
     setShowWallet(false);
+
+    // Tenta cache primeiro
+    const cached = getCachedBalance(addr);
+    if (cached !== null) {
+      setBalance(cached);
+    }
 
     Promise.all([
       getBalance(addr).catch(() => ({ balance: 0 } as any)),
@@ -25,7 +43,9 @@ export default function Wallet() {
       getAllTransactions({ receiver: addr }).catch(() => ({ transactions: [] })),
     ])
       .then(([bal, sent, recv]) => {
-        setBalance((bal as any).balance ?? 0);
+        const balance = (bal as any).balance ?? 0;
+        setBalance(balance);
+        setCachedBalance(addr, balance); // Atualiza cache
         setSentTxs((sent as any).transactions || []);
         setReceivedTxs((recv as any).transactions || []);
       })
@@ -45,6 +65,16 @@ export default function Wallet() {
       setGeneratedWallet(wallet);
       setAddress(wallet.address);
       setShowWallet(true);
+      // Salva no localStorage para usar no SendTransaction
+      saveWallet({
+        address: wallet.address,
+        public_key: wallet.public_key_pem || '',
+        private_key_pem: wallet.private_key_pem || '',
+        label: `Carteira #${Date.now() % 10000}`,
+        created_at: Date.now(),
+      });
+      // Conecta automaticamente
+      connect(wallet.address, wallet.private_key_pem, wallet.public_key_pem);
     } catch (err: any) {
       setError(err.message || 'Erro ao gerar carteira');
     }
@@ -75,18 +105,23 @@ export default function Wallet() {
             className="px-6 py-2.5 bg-kur-green/10 text-kur-green border border-kur-green/30 rounded-lg hover:bg-kur-green/20 transition-colors text-sm font-medium whitespace-nowrap">
             + Gerar Carteira
           </button>
-        </div>
-
-        {showWallet && generatedWallet && (
-          <div className="bg-kur-bg rounded-lg p-4 border border-kur-border">
-            <p className="text-kur-text-muted text-xs uppercase tracking-wider mb-2">Nova Carteira Gerada</p>
-            <div className="space-y-1 text-sm">
-              <div><span className="text-kur-text-muted">Endereço: </span><span className="text-kur-text font-mono text-xs">{generatedWallet.address}</span></div>
-              <div><span className="text-kur-text-muted">Chave Privada: </span><span className="text-kur-text font-mono text-xs">{generatedWallet.private_key_pem?.slice(0, 40)}...</span></div>
+        </div>          {isConnected && queryAddress === currentAddress && (
+            <div className="bg-kur-green/5 border border-kur-green/20 rounded-lg p-3 mb-4">
+              <p className="text-xs text-kur-green font-medium">🔗 Carteira conectada</p>
+              <p className="text-[10px] font-mono text-kur-text-muted mt-0.5">Usando carteira do topo da página</p>
             </div>
-            <p className="text-kur-yellow text-xs mt-3">⚠ Guarde a chave privada com segurança!</p>
-          </div>
-        )}
+          )}
+
+          {showWallet && generatedWallet && (
+            <div className="bg-kur-bg rounded-lg p-4 border border-kur-border">
+              <p className="text-kur-text-muted text-xs uppercase tracking-wider mb-2">Nova Carteira Gerada</p>
+              <div className="space-y-1 text-sm">
+                <div><span className="text-kur-text-muted">Endereço: </span><span className="text-kur-text font-mono text-xs">{generatedWallet.address}</span></div>
+                <div><span className="text-kur-text-muted">Chave Privada: </span><span className="text-kur-text font-mono text-xs">{generatedWallet.private_key_pem?.slice(0, 40)}...</span></div>
+              </div>
+              <p className="text-kur-yellow text-xs mt-3">⚠ Guarde a chave privada com segurança! Ela foi salva no navegador para uso no formulário de envio.</p>
+            </div>
+          )}
       </div>
 
       {!queryAddress ? (

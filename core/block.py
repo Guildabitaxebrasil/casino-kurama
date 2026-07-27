@@ -40,7 +40,24 @@ class Block:
             difficulty: Dificuldade do PoW usada na mineração
         """
         self.index = index
-        self.timestamp = timestamp or time.time()
+
+        # ─── Validação de timestamp ───────────────────────────
+        # Impede timestamps do futuro (tolerância de 5 min para
+        # diferenças de relógio entre nós) e do passado remoto.
+        if timestamp is not None:
+            now = time.time()
+            if timestamp > now + 300:  # 5 min no futuro
+                raise ValueError(
+                    f"Timestamp do bloco está no futuro: {timestamp}"
+                )
+            if timestamp < 0:
+                raise ValueError(
+                    f"Timestamp negativo: {timestamp}"
+                )
+            self.timestamp = timestamp
+        else:
+            self.timestamp = time.time()
+
         self.transactions = transactions or []
         self.proof = proof
         self.previous_hash = previous_hash
@@ -116,7 +133,7 @@ class Block:
         # Se uma classe de transação foi fornecida, reconstrói os objetos
         if transaction_class and transactions:
             transactions = [
-                transaction_class.from_dict(tx) if hasattr(tx, 'from_dict') else tx
+                transaction_class.from_dict(tx) if isinstance(tx, dict) else tx
                 for tx in transactions
             ]
 
@@ -136,12 +153,29 @@ class Block:
         Verifica se todas as transações no bloco são válidas.
         Isso inclui verificar assinaturas e valores.
 
+        Regras de validação:
+        1. Cada transação individual deve ser válida (assinatura, valor)
+        2. Deve haver EXATAMENTE uma transação coinbase (sender='0')
+        3. A transação coinbase deve ser a PRIMEIRA do bloco
+           (convenção Bitcoin para garantir deterministicismo)
+
         Returns:
             True se todas as transações são válidas
         """
-        for tx in self.transactions:
+        coinbase_count = 0
+        for i, tx in enumerate(self.transactions):
             if hasattr(tx, 'is_valid') and not tx.is_valid():
                 return False
+            if hasattr(tx, 'sender') and tx.sender == '0':
+                coinbase_count += 1
+                # Coinbase deve ser a primeira transação
+                if i != 0:
+                    return False
+
+        # Exatamente uma coinbase por bloco
+        if coinbase_count != 1:
+            return False
+
         return True
 
     def __str__(self) -> str:

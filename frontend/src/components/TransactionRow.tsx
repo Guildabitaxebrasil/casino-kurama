@@ -33,6 +33,11 @@ export default function TransactionRow({ tx }: Props) {
         <span className="text-sm font-mono font-medium text-kur-text">{tx.amount.toFixed(2)}</span>
       </td>
       <td className="py-3 px-4 text-right">
+        <span className="text-xs font-mono text-kur-text-muted">
+          {isCoinbase ? '—' : (tx.fee ?? 0).toFixed(3)}
+        </span>
+      </td>
+      <td className="py-3 px-4 text-right">
         <span className="text-xs text-kur-text-muted">{new Date(tx.timestamp * 1000).toLocaleString('pt-BR')}</span>
       </td>
     </tr>

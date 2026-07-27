@@ -1,9 +1,12 @@
-import { useApi, usePolling } from '../hooks/useApi';
+import { useApi } from '../hooks/useApi';
+import { useSSE } from '../hooks/useSSE';
 import { getNodes } from '../api/client';
 
 export default function Network() {
   const { data, loading, error, refresh } = useApi(() => getNodes(), []);
-  usePolling(refresh, 5000);
+  useSSE('/api/events', {
+    chain_updated: () => refresh(),
+  });
 
   if (loading && !data) {
     return <div className="skeleton h-96 w-full rounded-xl" />;
@@ -22,9 +25,9 @@ export default function Network() {
     );
   }
 
-  const nodeList = data || [];
-  const total = nodeList.length;
-  const active = nodeList.filter(n => n.active).length;
+  const nodeList = data?.nodes || [];
+  const total = data?.total ?? nodeList.length;
+  const active = data?.active ?? nodeList.filter((n: any) => n.active).length;
   const inactive = total - active;
 
   return (
@@ -80,14 +83,14 @@ export default function Network() {
             </thead>
             <tbody>
               {nodeList.map((node) => (
-                <tr key={node.id} className="border-t border-kur-border hover:bg-kur-bg-hover transition-colors">
+                <tr key={node.node_id} className="border-t border-kur-border hover:bg-kur-bg-hover transition-colors">
                   <td className="py-3 px-4">
                     <span className="font-mono text-xs text-kur-accent">
-                      {node.id?.slice(0, 16)}...
+                      {node.node_id?.slice(0, 16)}...
                     </span>
                   </td>
                   <td className="py-3 px-4 font-mono text-xs text-kur-text">{node.url}</td>
-                  <td className="py-3 px-4 text-right font-mono text-kur-text">{node.chain_length || '-'}</td>
+                  <td className="py-3 px-4 text-right font-mono text-kur-text">{node.blocks ?? '-'}</td>
                   <td className="py-3 px-4 text-right font-mono text-xs text-kur-text-muted">
                     {node.latency_ms != null ? `${node.latency_ms}ms` : '-'}
                   </td>

@@ -15,3 +15,45 @@ ecdsa==0.19.1
 
 # Codificação Base58 - formato de endereços estilo Bitcoin
 base58==2.1.1
+
+# Argon2 - Key Derivation Function resistente a GPU/ASIC
+# Usado para wallet encryption (substitui PBKDF2)
+argon2-cffi>=23.1.0
+
+# Keccak-256 - hash compatível com Ethereum (assinaturas EVM)
+# Necessário para derivar endereços 0x... a partir de chaves públicas
+# pycryptodome tem pre-built wheels (mais fácil no Windows)
+pycryptodome>=3.20.0
+
+# ─── Produção: Banco de Dados PostgreSQL ──────────────────────────
+# ORM assíncrono para PostgreSQL
+SQLAlchemy>=2.0.36
+asyncpg>=0.30.0
+# Alembic para migrations (opcional, recomendado)
+alembic>=1.14.0
+
+# ─── Produção: Integração Polygon (ERC-20 USDT) ─────────────────
+# Web3.py - cliente Ethereum/Polygon para Python
+web3>=6.0.0
+
+# ─── Produção: Criptografia Avançada ─────────────────────────────
+# AES-256-GCM + PBKDF2 + KMS helpers
+# cryptography é mais completo que pycryptodome
+cryptography>=44.0.0
+
+# ─── Produção: 2FA / Autenticação ───────────────────────────────
+# PyOTP para geração e verificação de TOTP (Google Authenticator)
+pyotp>=2.9.0
+qrcode[pil]>=7.4.2
+
+# ─── Produção: Monitoramento e Filas ─────────────────────────────
+# Redis para fila de transações e cache
+redis>=5.2.0
+# Schedule para tarefas agendadas (sweeps, monitoramento)
+schedule>=1.2.2
+
+# ─── Produção: Utilitários ───────────────────────────────────────
+# Python-dotenv para carregar .env
+dotenv>=0.9.9
+requests>=2.32.3
+

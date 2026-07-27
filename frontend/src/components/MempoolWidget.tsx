@@ -38,6 +38,11 @@ export default function MempoolWidget({ stats, loading }: Props) {
       <div className="text-center">
         <p className="text-4xl font-bold text-kur-yellow font-mono">{stats.total}</p>
         <p className="text-xs text-kur-text-muted mt-1">Transações Pendentes</p>
+        {(stats.total_fees ?? 0) > 0 && (
+          <p className="text-xs text-kur-accent mt-1 font-mono">
+            Taxas acumuladas: {stats.total_fees.toFixed(3)} KUR
+          </p>
+        )}
       </div>
 
       <div className="grid grid-cols-2 gap-3 text-sm">

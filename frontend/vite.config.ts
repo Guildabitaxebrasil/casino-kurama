@@ -6,15 +6,18 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/api': 'http://localhost:5000',
-      '/chain': 'http://localhost:5000',
-      '/mine': 'http://localhost:5000',
-      '/transactions': 'http://localhost:5000',
-      '/wallet': 'http://localhost:5000',
-      '/balance': 'http://localhost:5000',
-      '/nodes': 'http://localhost:5000',
-      '/validate': 'http://localhost:5000',
-      '/stats': 'http://localhost:5000',
+      // ⚠️ Dev only: `secure: false` permite certificados auto-assinados.
+      // Em produção, configure HTTPS real com CA confiável no servidor
+      // backend e remova `secure: false` (ou aponte para o certificado CA).
+      '/api': { target: 'http://localhost:5000', secure: false },
+      '/chain': { target: 'http://localhost:5000', secure: false },
+      '/mine': { target: 'http://localhost:5000', secure: false },
+      '/transactions': { target: 'http://localhost:5000', secure: false },
+      '/wallet': { target: 'http://localhost:5000', secure: false },
+      '/balance': { target: 'http://localhost:5000', secure: false },
+      '/nodes': { target: 'http://localhost:5000', secure: false },
+      '/validate': { target: 'http://localhost:5000', secure: false },
+      '/stats': { target: 'http://localhost:5000', secure: false },
     },
   },
 })

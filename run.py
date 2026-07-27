@@ -25,6 +25,35 @@ import os
 import argparse
 import time
 import json
+import subprocess
+import uuid
+
+# ─── Limpa cache bytecode FORÇADAMENTE ────────────────────────────
+# No Windows, o comando rm -rf pode não funcionar no bash.
+# Esta função garante que o cache seja limpo antes de qualquer import.
+import glob
+_script_dir = os.path.dirname(os.path.abspath(__file__))
+for _pyc in glob.glob(os.path.join(_script_dir, '**', '__pycache__', '**', '*.pyc'), recursive=True):
+    try:
+        os.remove(_pyc)
+    except OSError:
+        pass
+for _pyc in glob.glob(os.path.join(_script_dir, '**', '*.pyc'), recursive=True):
+    try:
+        os.remove(_pyc)
+    except OSError:
+        pass
+
+# ─── Força UTF-8 no stdout/stderr (anti-UnicodeEncodeError no Windows) ─
+# O terminal Windows usa cp1252 como padrão, que não suporta emojis.
+# Esta configuração força UTF-8, prevenindo erros de codificação
+# em prints com caracteres Unicode.
+try:
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
+except AttributeError:
+    # Python < 3.7 não tem reconfigure
+    pass
 
 # Adiciona o diretório raiz ao path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -33,13 +62,62 @@ from core.blockchain import Blockchain
 from core.wallet import Wallet
 from core.crypto_utils import CryptoUtils
 from core.transaction import Transaction
-from config import DEFAULT_PORT, DEFAULT_DIFFICULTY, CHAIN_FILE
+from config import (
+    DEFAULT_PORT, DEFAULT_DIFFICULTY, CHAIN_FILE,
+    SSL_CERT_DIR, SSL_CERT_FILE, SSL_KEY_FILE, USE_HTTPS,
+    NETWORK_SECRET, DATA_DIR
+)
+
+# ─── Auto-gera NETWORK_SECRET se vazio ─────────────────────────
+# Garante que toda execução tenha um secret P2P único, mesmo que
+# o usuário não tenha configurado um manualmente.
+if not NETWORK_SECRET:
+    import importlib
+    import config as cfg
+    cfg.NETWORK_SECRET = uuid.uuid4().hex
+    NETWORK_SECRET = cfg.NETWORK_SECRET
+    print(f"Secret P2P auto-gerado: {NETWORK_SECRET[:16]}...")
+
+
+def ensure_certificates():
+    """
+    Gera certificados SSL auto-assinados se não existirem.
+
+    Os certificados são gerados com OpenSSL e armazenados no
+    diretório 'certs/'. São auto-assinados e válidos por 10 anos.
+    Em produção, substitua por certificados de uma CA confiável.
+    """
+    os.makedirs(SSL_CERT_DIR, exist_ok=True)
+
+    if not os.path.exists(SSL_CERT_FILE) or not os.path.exists(SSL_KEY_FILE):
+        print("[SSL] Gerando certificados SSL auto-assinados...")
+        try:
+            # NOTA: No Windows/Git Bash, o subject deve usar
+            # barras invertidas para separar os campos, senão
+            # o OpenSSL interpreta as barras como caminhos.
+            subprocess.run([
+                'openssl', 'req', '-x509', '-newkey', 'rsa:2048',
+                '-keyout', SSL_KEY_FILE,
+                '-out', SSL_CERT_FILE,
+                '-days', '3650', '-nodes',
+                '-subj', '//CN=KuramaChain\\O=KuramaNetwork\\C=BR'
+            ], check=True, capture_output=True, text=True)
+            print(f"   [OK] Certificados salvos em {SSL_CERT_DIR}/")
+            print(f"   [WARN] Auto-assinados — use CA confiavel em producao")
+        except (subprocess.CalledProcessError, FileNotFoundError) as e:
+            print(f"   [ERR] Falha ao gerar certificados: {e}")
+            print("   [WARN]  Continuando sem SSL (HTTP puro)")
+            return False
+    else:
+        print(f"   [OK] Certificados SSL encontrados em {SSL_CERT_DIR}/")
+
+    return True
 
 
 def parse_args():
     """Analisa argumentos da linha de comando."""
     parser = argparse.ArgumentParser(
-        description='💎 Blockchain com Proof of Work e API REST',
+        description='Blockchain com Proof of Work e API REST',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Exemplos:
@@ -57,6 +135,10 @@ Exemplos:
                         help=f'Dificuldade do PoW (default: {DEFAULT_DIFFICULTY})')
     parser.add_argument('--load', action='store_true',
                         help='Carregar blockchain salva')
+
+    # Segurança
+    parser.add_argument('--no-ssl', action='store_true',
+                        help='Desabilitar HTTPS (usar HTTP puro)')
 
     # Modo multi-nó
     parser.add_argument('--network', action='store_true',
@@ -81,35 +163,57 @@ def run_single_node(args):
         args: Argumentos da linha de comando
     """
     print(f"\n{'='*60}")
-    print("💎 BLOCKCHAIN NODE")
+    print("BLOCKCHAIN NODE")
     print(f"{'='*60}\n")
 
     # Carrega ou cria blockchain
     if args.load and os.path.exists(CHAIN_FILE):
-        print("📂 Carregando blockchain do arquivo...")
+        print("[DIR] Carregando blockchain do arquivo...")
         blockchain = Blockchain.load_from_file(CHAIN_FILE)
         blockchain.difficulty = args.difficulty
     else:
-        print("🆕 Criando nova blockchain...")
+        print("[NEW] Criando nova blockchain...")
         blockchain = Blockchain(difficulty=args.difficulty)
 
-    # Cria carteira do nó
-    wallet = Wallet()
+    # ─── Identidade do Nó (ECDSA Persistente) ───────────────────
+    # Carrega identidade existente ou gera nova.
+    # Persiste em DATA_DIR/node_identity.json entre restarts.
+    from core.identity import get_or_create_identity
+    identity_file = os.path.join(DATA_DIR, 'node_identity.json')
+    node_identity = get_or_create_identity(identity_file)
+
+    # Cria carteira do nó a partir da identidade persistente
+    from core.wallet import Wallet
+    wallet = Wallet(private_key_pem=node_identity.private_key_pem)
     miner_address = wallet.address
 
-    print(f"\n📋 Informações do Nó:")
+    print(f"\n[INFO] Informações do Nó:")
     print(f"   ID: {blockchain.node_id[:16]}...")
     print(f"   Blocos: {len(blockchain.chain)}")
     print(f"   Dificuldade: {blockchain.difficulty}")
     print(f"   Minerador: {miner_address[:20]}...")
     print(f"   Transações pendentes: {len(blockchain.pending_transactions)}")
-    print(f"\n🔑 Chave privada do minerador (guarde!):")
-    print(f"   {wallet.private_key_pem[:50]}...\n")
+    # ATENÇÃO: NÃO imprimimos a chave privada no console por segurança.
+    # Em produção, a chave privada NUNCA deve ser exibida em logs.
 
     # Verifica integridade
     if len(blockchain.chain) > 1:
-        print("🔍 Verificando integridade...")
+        print("[CHECK] Verificando integridade...")
         blockchain.is_chain_valid()
+
+    # ─── HTTPS Setup ─────────────────────────────────────────────
+    use_ssl = not args.no_ssl
+    ssl_context = None
+    protocol = 'http'
+
+    if use_ssl:
+        if ensure_certificates():
+            ssl_context = (SSL_CERT_FILE, SSL_KEY_FILE)
+            protocol = 'https'
+        else:
+            print("   [WARN]  Rodando sem SSL (use --no-ssl para suprimir)")
+    else:
+        print("   [WARN]  HTTPS desabilitado via --no-ssl")
 
     # Inicia servidor Flask
     from api.routes import create_app
@@ -119,25 +223,112 @@ def run_single_node(args):
         port=args.port
     )
 
-    print(f"\n🚀 Servidor rodando em http://localhost:{args.port}")
-    print(f"\n📌 Endpoints disponíveis:")
-    print(f"   GET  /chain              - Blockchain completa")
-    print(f"   GET  /mine               - Minerar bloco")
-    print(f"   POST /transactions/new   - Nova transação")
-    print(f"   GET  /wallet/new         - Nova carteira")
-    print(f"   GET  /balance/<address>  - Saldo")
-    print(f"   POST /nodes/register     - Registrar nós vizinhos")
-    print(f"   GET  /nodes/resolve      - Consenso")
-    print(f"   GET  /validate           - Validar blockchain")
-    print(f"   GET  /stats              - Estatísticas")
-    print(f"\n💡 Teste: curl http://localhost:{args.port}/chain\n")
+    # ─── Registra Blueprint do Cassino ──────────────────────────
+    try:
+        from casino.backend.routes import create_casino_blueprint
+        casino_bp = create_casino_blueprint(blockchain=blockchain)
+        app.register_blueprint(casino_bp)
+        print("   [CASINO] Blueprint do cassino registrado em /api/casino/*")
+    except ImportError as e:
+        print(f"   [WARN] Cassino nao disponivel: {e}")
+    except Exception as e:
+        print(f"   [WARN] Erro ao registrar cassino: {e}")
+
+    # ─── Registra Blueprint de Producao (Polygon + Lucro) ────
+    # NOTA: O blueprint e registrado ANTES da inicializacao do
+    # ProductionDepositManager. Isso garante que os endpoints
+    # (como GET /owner/challenge) sejam acessiveis mesmo se a
+    # inicializacao falhar (ex: Polygon RPC indisponivel).
+    prod_manager = None
+    try:
+        from casino.backend.infrastructure.routes import create_production_blueprint
+        from casino.backend.infrastructure.deposit_manager_production import ProductionDepositManager
+        prod_manager = ProductionDepositManager()
+        prod_bp = create_production_blueprint(prod_manager)
+        app.register_blueprint(prod_bp)
+        app.prod_manager = prod_manager
+        print("   [PRODUCTION] Blueprint de producao registrado em /api/v2/casino/*")
+    except ImportError as e:
+        print(f"   [WARN] Blueprint de producao nao disponivel: {e}")
+    except Exception as e:
+        print(f"   [WARN] Erro ao registrar blueprint de producao: {e}")
+        prod_manager = None
+
+    # Inicializa o ProductionDepositManager SEPARADAMENTE apos o
+    # registro do blueprint, para que erros de inicializacao
+    # (ex: sem PostgreSQL, Polygon RPC offline) nao impeçam
+    # os endpoints de estarem disponiveis.
+    if prod_manager:
+        try:
+            prod_manager.initialize()
+            print("   [PRODUCTION] ProductionDepositManager inicializado com sucesso!")
+        except Exception as e:
+            print(f"   [WARN] ProductionDepositManager nao pode ser inicializado: {e}")
+            print("   [WARN]  Os endpoints /api/v2/casino/* estao registrados, mas retornarao")
+            print("   [WARN]  erro 500 ate que as dependencias (PostgreSQL, Polygon RPC)")
+            print("   [WARN]  estejam configuradas corretamente.")
+
+    # ─── Registra Blueprint da Lightning Network ────────────────
+    try:
+        from lightning.api import create_lightning_blueprint
+        from lightning.lightning_network import LightningNetwork
+        ln = LightningNetwork(
+            blockchain=blockchain,
+            node_address=miner_address,
+            private_key_pem=wallet.private_key_pem,
+        )
+        ln_bp = create_lightning_blueprint(lightning_network=ln)
+        app.register_blueprint(ln_bp)
+        # Armazena referência para acesso via current_app
+        app.lightning_network = ln
+        print("   [LIGHTNING] Blueprint da Lightning Network registrado em /api/lightning/*")
+    except ImportError as e:
+        print(f"   [WARN] Lightning Network nao disponivel: {e}")
+    except Exception as e:
+        print(f"   [WARN] Erro ao registrar Lightning Network: {e}")
+
+    # ─── Registra Blueprint Polygon ────────────────────────
+    try:
+        from api.polygon_routes import polygon_bp
+        app.register_blueprint(polygon_bp)
+        print("   [POLYGON] Blueprint do Polygon registrado em /api/polygon/*")
+    except ImportError as e:
+        print(f"   [WARN] Polygon nao disponivel: {e}")
+    except Exception as e:
+        print(f"   [WARN] Erro ao registrar Polygon: {e}")
+
+    print(f"\n[START] Servidor rodando em {protocol}://localhost:{args.port}")
+    print(f"\n[ENDPOINT] Endpoints disponíveis:")
+    print(f"   GET  /chain                - Blockchain completa")
+    print(f"   POST /mine                 - Minerar bloco")
+    print(f"   POST /transactions/new     - Nova transação")
+    print(f"   POST /wallet/new           - Nova carteira")
+    print(f"   GET  /balance/<address>    - Saldo")
+    print(f"   POST /nodes/register       - Registrar nós vizinhos")
+    print(f"   GET  /nodes/resolve        - Consenso")
+    print(f"   GET  /validate             - Validar blockchain")
+    print(f"   GET  /stats                - Estatísticas")
+    print(f"   GET  /api/casino/*         - Cassino (jogos, depositos)")
+    print(f"   GET  /api/lightning/*     - Lightning Network (canais, pagamentos)")
+    if use_ssl:
+        print(f"\n[TIP] Teste: curl -k https://localhost:{args.port}/chain\n")
+    else:
+        print(f"\n[TIP] Teste: curl http://localhost:{args.port}/chain\n")
+
+    # ─── Error handler para capturar erros internos ────────────
+    @app.errorhandler(500)
+    def internal_error(error):
+        import traceback
+        traceback.print_exc()
+        return {'error': 'Erro interno do servidor'}, 500
 
     try:
-        app.run(host='0.0.0.0', port=args.port, debug=False)
+        app.run(host='0.0.0.0', port=args.port,
+                ssl_context=ssl_context, debug=False, use_reloader=False)
     except KeyboardInterrupt:
-        print("\n\n💾 Salvando blockchain...")
+        print("\n\n[SAVE] Salvando blockchain...")
         blockchain.save_to_file(CHAIN_FILE)
-        print("👋 Encerrando...")
+        print("[BYE] Encerrando...")
 
 
 def run_network(args):
@@ -150,21 +341,25 @@ def run_network(args):
     """
     from node.node_manager import NodeManager
 
-    manager = NodeManager(base_port=args.port)
+    use_ssl = not args.no_ssl
+    if use_ssl:
+        ensure_certificates()
+
+    manager = NodeManager(base_port=args.port, use_ssl=use_ssl)
     manager.start_network(num_nodes=args.nodes)
 
-    print(f"\n📊 Pressione Ctrl+C para parar todos os nós\n")
+    print(f"\n[STATS] Pressione Ctrl+C para parar todos os nós\n")
 
     try:
         # Mantém o programa rodando
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
-        print("\n\n🛑 Parando todos os nós...")
+        print("\n\n[STOP] Parando todos os nós...")
         for nid in list(manager.nodes.keys()):
             manager.stop_node(nid)
-        print("👷 Rede encerrada.")
-        print("\n📊 Estatísticas finais:")
+        print("[WORKER] Rede encerrada.")
+        print("\n[STATS] Estatísticas finais:")
         stats = manager.get_network_stats()
         for nid, info in stats.items():
             print(f"   {nid}: {info['blocks']} blocos, "
@@ -183,7 +378,7 @@ def run_interactive(args):
     wallets = {}
 
     print(f"\n{'='*60}")
-    print("💎 BLOCKCHAIN INTERATIVA")
+    print("[CHAIN] BLOCKCHAIN INTERATIVA")
     print(f"{'='*60}\n")
 
     commands = {
@@ -201,7 +396,7 @@ def run_interactive(args):
 
     while True:
         print(f"\n{'>'*40}")
-        print(f"📋 Blocos: {len(blockchain.chain)} | "
+        print(f"[INFO] Blocos: {len(blockchain.chain)} | "
               f"Dificuldade: {blockchain.difficulty} | "
               f"Pendentes: {len(blockchain.pending_transactions)}")
         print(f"{'>'*40}")
@@ -209,22 +404,22 @@ def run_interactive(args):
         for key, (cmd, _) in commands.items():
             print(f"   [{key}] {cmd}")
 
-        choice = input("\n👉 Escolha: ").strip()
+        choice = input("\n> Escolha: ").strip()
 
         if choice == '1':
             # Nova carteira
             wallet = Wallet()
             wallets[wallet.address[:12]] = wallet
-            print(f"\n✅ Carteira criada!")
+            print(f"\n[OK] Carteira criada!")
             print(f"   Endereço: {wallet.address}")
             print(f"   Chave pública: {wallet.public_key_pem[:40]}...")
 
         elif choice == '2':
             # Listar carteiras
             if not wallets:
-                print("\n⚠️  Nenhuma carteira criada.")
+                print("\n[WARN]  Nenhuma carteira criada.")
             else:
-                print(f"\n📋 Carteiras ({len(wallets)}):")
+                print(f"\n[INFO] Carteiras ({len(wallets)}):")
                 for name, w in wallets.items():
                     balance = blockchain.get_balance(w.address)
                     print(f"   {name}: {w.address[:20]}... | "
@@ -233,7 +428,7 @@ def run_interactive(args):
         elif choice == '3':
             # Nova transação
             if len(wallets) < 2:
-                print("\n⚠️  Crie pelo menos 2 carteiras primeiro.")
+                print("\n[WARN]  Crie pelo menos 2 carteiras primeiro.")
                 continue
 
             print("\nCarteiras disponíveis:")
@@ -253,14 +448,14 @@ def run_interactive(args):
                 tx = sender.create_transaction(receiver, amount)
                 blockchain.pending_transactions.append(tx)
 
-                print(f"\n✅ Transação criada: {tx}")
+                print(f"\n[OK] Transação criada: {tx}")
             except (ValueError, IndexError) as e:
-                print(f"\n❌ Erro: {e}")
+                print(f"\n[ERR] Erro: {e}")
 
         elif choice == '4':
             # Minerar bloco
             if not wallets:
-                print("\n⚠️  Crie uma carteira primeiro para receber a recompensa.")
+                print("\n[WARN]  Crie uma carteira primeiro para receber a recompensa.")
                 continue
 
             # Usa a primeira carteira como minerador
@@ -269,11 +464,11 @@ def run_interactive(args):
 
             if block:
                 balance = blockchain.get_balance(miner.address)
-                print(f"\n💰 Saldo do minerador: {balance:.2f}")
+                print(f"\n[MONEY] Saldo do minerador: {balance:.2f}")
 
         elif choice == '5':
             # Ver blockchain
-            print(f"\n📜 BLOCKCHAIN ({len(blockchain.chain)} blocos):\n")
+            print(f"\n[CHAIN] BLOCKCHAIN ({len(blockchain.chain)} blocos):\n")
             for block in blockchain.chain:
                 ts = time.strftime('%Y-%m-%d %H:%M:%S',
                                    time.localtime(block.timestamp))
@@ -294,7 +489,7 @@ def run_interactive(args):
         elif choice == '6':
             # Ver saldo
             if not wallets:
-                print("\n⚠️  Nenhuma carteira criada.")
+                print("\n[WARN]  Nenhuma carteira criada.")
                 continue
 
             for name, w in wallets.items():
@@ -303,21 +498,21 @@ def run_interactive(args):
 
         elif choice == '7':
             # Validar blockchain
-            print("\n🔍 Validando blockchain...")
+            print("\n[CHECK] Validando blockchain...")
             valid = blockchain.is_chain_valid()
             if valid:
-                print("✅ Blockchain válida e íntegra!")
+                print("[OK] Blockchain válida e íntegra!")
             else:
-                print("❌ Blockchain corrompida!")
+                print("[ERR] Blockchain corrompida!")
 
         elif choice == '8':
             # Salvar blockchain
             blockchain.save_to_file(CHAIN_FILE)
-            print(f"\n💾 Blockchain salva em {CHAIN_FILE}")
+            print(f"\n[SAVE] Blockchain salva em {CHAIN_FILE}")
 
         elif choice == '9':
             # Estatísticas
-            print(f"\n📊 Estatísticas:")
+            print(f"\n[STATS] Estatísticas:")
             print(f"   Blocos: {len(blockchain.chain)}")
             print(f"   Dificuldade: {blockchain.difficulty}")
             print(f"   Recompensa: {blockchain.reward}")
@@ -333,14 +528,14 @@ def run_interactive(args):
                 print(f"   Saldo total: {total_balance:.2f} coins")
 
         elif choice == '0':
-            print("\n👋 Encerrando...")
+            print("\n[BYE] Encerrando...")
             save = input("Salvar blockchain? (s/N): ").strip().lower()
             if save == 's':
                 blockchain.save_to_file(CHAIN_FILE)
             break
 
         else:
-            print("\n❌ Comando inválido!")
+            print("\n[ERR] Comando inválido!")
 
 
 def run_demo(args):
@@ -352,57 +547,69 @@ def run_demo(args):
         args: Argumentos da linha de comando
     """
     print(f"\n{'='*60}")
-    print("💎 DEMONSTRAÇÃO COMPLETA DA BLOCKCHAIN")
+    print("[CHAIN] DEMONSTRAÇÃO COMPLETA DA BLOCKCHAIN")
     print(f"{'='*60}\n")
 
     # ─── 1. CRIAÇÃO DA BLOCKCHAIN ────────────────────────────────
-    print("1️⃣  CRIANDO A BLOCKCHAIN")
+    print("[1] CRIANDO A BLOCKCHAIN")
     print("-" * 40)
     blockchain = Blockchain(difficulty=4)
-    print(f"   ✅ Blockchain criada!")
-    print(f"   📦 Bloco gênese: {blockchain.chain[0].hash[:32]}...")
-    print(f"   🔗 Total: {len(blockchain.chain)} bloco(s)")
+    print(f"   [OK] Blockchain criada!")
+    print(f"   [GENESIS] Bloco gênese: {blockchain.chain[0].hash[:32]}...")
+    print(f"   [CHAIN] Total: {len(blockchain.chain)} bloco(s)")
     print()
 
     # ─── 2. CRIAÇÃO DE CARTEIRAS ─────────────────────────────────
-    print("2️⃣  CRIANDO CARTEIRAS")
+    print("[2] CRIANDO CARTEIRAS")
     print("-" * 40)
     alice = Wallet()
     bob = Wallet()
     miner = Wallet()
-    print(f"   👤 Alice:   {alice.address[:20]}...")
-    print(f"   👤 Bob:     {bob.address[:20]}...")
-    print(f"   ⛏️  Minerador: {miner.address[:20]}...")
+    print(f"   [USER] Alice:   {alice.address[:20]}...")
+    print(f"   [USER] Bob:     {bob.address[:20]}...")
+    print(f"   [MINE]  Minerador: {miner.address[:20]}...")
     print()
 
     # ─── 3. MINERAÇÃO DO BLOCO #1 ────────────────────────────────
-    print("3️⃣  MINERANDO BLOCO #1 (recompensa inicial)")
+    print("[3] MINERANDO BLOCO #1 (recompensa inicial)")
     print("-" * 40)
-    # Adiciona uma transação de coinbase manualmente
-    blockchain.pending_transactions.append(
-        Transaction(sender='0', receiver=alice.address, amount=100.0)
-    )
+    # A recompensa de mineração (coinbase) é adicionada automaticamente
+    # pelo método mine_block(). A validação de bloco exige EXATAMENTE
+    # uma coinbase por bloco (sender='0'), impedindo inflação.
+    # Não adicione transações coinbase manualmente — isso é um ataque
+    # de inflação detectado pela validação de segurança.
     blockchain.mine_block(miner.address)
+    print()
+    print("   [TIP] Dica: a coinbase é adicionada automaticamente pelo")
+    print("   sistema de mineração. Transações sender='0' manuais são")
+    print("   bloqueadas pela validação de segurança (anti-inflação).")
     print()
 
     # ─── 4. TRANSAÇÕES ───────────────────────────────────────────
-    print("4️⃣  CRIANDO TRANSAÇÕES")
+    print("[4] CRIANDO TRANSAÇÕES")
     print("-" * 40)
-    # Alice envia 30 coins para Bob
-    tx1 = alice.create_transaction(bob.address, 30.0)
+    # Minerador envia 30 coins para Alice (ele recebeu a recompensa)
+    # O minerador usa sua chave privada para assinar a transação
+    tx_miner_alice = miner.create_transaction(alice.address, 30.0)
+    blockchain.pending_transactions.append(tx_miner_alice)
+    print(f"   [OK] Minerador → Alice: 30.0 coins")
+    print(f"      ID: {tx_miner_alice.transaction_id[:20]}...")
+
+    # Alice envia 15 coins para Bob (ela recebeu 30 do minerador)
+    tx1 = alice.create_transaction(bob.address, 15.0)
     blockchain.pending_transactions.append(tx1)
-    print(f"   ✅ Alice → Bob: 30.0 coins")
+    print(f"   [OK] Alice → Bob: 15.0 coins")
     print(f"      ID: {tx1.transaction_id[:20]}...")
     print(f"      Assinatura: {tx1.signature[:20] if tx1.signature else 'N/A'}...")
 
-    # Alice envia 20 coins para o minerador
-    tx2 = alice.create_transaction(miner.address, 20.0)
+    # Alice envia 5 coins para o minerador
+    tx2 = alice.create_transaction(miner.address, 5.0)
     blockchain.pending_transactions.append(tx2)
-    print(f"   ✅ Alice → Minerador: 20.0 coins")
+    print(f"   [OK] Alice → Minerador: 5.0 coins")
     print()
 
     # ─── 5. VALIDAÇÃO DE ASSINATURA ──────────────────────────────
-    print("5️⃣  VERIFICANDO ASSINATURAS DIGITAIS")
+    print("[5] VERIFICANDO ASSINATURAS DIGITAIS")
     print("-" * 40)
     print(f"   Tx1 válida: {tx1.is_valid()}")
     print(f"   Tx2 válida: {tx2.is_valid()}")
@@ -417,28 +624,45 @@ def run_demo(args):
     print()
 
     # ─── 6. MINERAÇÃO DO BLOCO #2 ────────────────────────────────
-    print("6️⃣  MINERANDO BLOCO #2 (com transações)")
+    print("[6] MINERANDO BLOCO #2 (com transações)")
     print("-" * 40)
     blockchain.mine_block(miner.address)
     print()
 
     # ─── 7. CONSULTA DE SALDOS ────────────────────────────────────
-    print("7️⃣  CONSULTANDO SALDOS")
+    print("[7] CONSULTANDO SALDOS")
     print("-" * 40)
     for name, wallet in [('Alice', alice), ('Bob', bob), ('Minerador', miner)]:
         balance = blockchain.get_balance(wallet.address)
-        print(f"   👛 {name}: {balance:.2f} coins")
+        print(f"   [WALLET] {name}: {balance:.2f} coins")
+    # Verificação de consistência dos saldos
+    alice_bal = blockchain.get_balance(alice.address)
+    bob_bal = blockchain.get_balance(bob.address)
+    miner_bal = blockchain.get_balance(miner.address)
+    # Alice: 30 recebidos - 15 (Bob) - 5 (Minerador) = 10
+    assert abs(alice_bal - 10.0) < 0.001, f"Alice balance mismatch: {alice_bal}"
+    # Bob: 15 recebidos
+    assert abs(bob_bal - 15.0) < 0.001, f"Bob balance mismatch: {bob_bal}"
+    # Minerador: 50 (bloco 1) + 50 (bloco 2) + 5 (Alice) - 30 (enviado Alice) = 75
+    assert abs(miner_bal - 75.0) < 0.001, f"Minerador balance mismatch: {miner_bal}"
+    print(f"\n   [OK] Saldos verificados e consistentes!")
     print()
 
+    # Salva saldos para o resumo final (antes da adulteração)
+    _final_alice = alice_bal
+    _final_bob = bob_bal
+    _final_miner = miner_bal
+    _final_total = alice_bal + bob_bal + miner_bal
+
     # ─── 8. VALIDAÇÃO DA CADEIA ──────────────────────────────────
-    print("8️⃣  VALIDANDO A BLOCKCHAIN")
+    print("[8] VALIDANDO A BLOCKCHAIN")
     print("-" * 40)
     valid = blockchain.is_chain_valid()
-    print(f"   {'✅ VÁLIDA!' if valid else '❌ INVÁLIDA!'}")
+    print(f"   {'[OK] VÁLIDA!' if valid else '[ERR] INVÁLIDA!'}")
     print()
 
     # ─── 9. TENTATIVA DE ADULTERAÇÃO ─────────────────────────────
-    print("9️⃣  SIMULANDO ADULTERAÇÃO DA CADEIA")
+    print("[9] SIMULANDO ADULTERAÇÃO DA CADEIA")
     print("-" * 40)
     # Altera uma transação no bloco 1
     old_hash = blockchain.chain[1].hash
@@ -458,7 +682,7 @@ def run_demo(args):
     print()
 
     # ─── 10. ÁRVORE DE MERKLE ────────────────────────────────────
-    print("🔟  DEMONSTRANDO ÁRVORE DE MERKLE")
+    print("[10]  DEMONSTRANDO ÁRVORE DE MERKLE")
     print("-" * 40)
     tx_list = [
         alice.create_transaction(bob.address, 5.0),
@@ -471,7 +695,7 @@ def run_demo(args):
     print()
 
     # ─── 11. TESTE DE PROOF OF WORK ──────────────────────────────
-    print("🏁  TESTE DE PROOF OF WORK")
+    print("[POW]  TESTE DE PROOF OF WORK")
     print("-" * 40)
     test_difficulty = 3
     print(f"   Dificuldade: {test_difficulty} zeros")
@@ -489,24 +713,25 @@ def run_demo(args):
             break
         proof += 1
         if proof > 500000:
-            print("   ⚠️  Limite excedido")
+            print("   [WARN]  Limite excedido")
             break
     print()
 
     # ─── 12. RESUMO FINAL ────────────────────────────────────────
     print("=" * 60)
-    print("📊 RESUMO DA BLOCKCHAIN")
+    print("[STATS] RESUMO DA BLOCKCHAIN")
     print("=" * 60)
     print(f"   Blocos minerados: {len(blockchain.chain)}")
     print(f"   Dificuldade atual: {blockchain.difficulty}")
     print(f"   Total de transações: {sum(len(b.transactions) for b in blockchain.chain)}")
-    print(f"   Saldo Alice: {blockchain.get_balance(alice.address):.2f}")
-    print(f"   Saldo Bob:   {blockchain.get_balance(bob.address):.2f}")
-    print(f"   Saldo Miner: {blockchain.get_balance(miner.address):.2f}")
-    print(f"   Recompensa total minerada: "
-          f"{len(blockchain.chain) * blockchain.reward:.2f}")
+    print(f"   Saldo Alice: {_final_alice:.2f}")
+    print(f"   Saldo Bob:   {_final_bob:.2f}")
+    print(f"   Saldo Miner: {_final_miner:.2f}")
+    print(f"   Oferta total: {_final_total:.2f} coins "
+          f"(recompensas mineradas: "
+          f"{(len(blockchain.chain)-1) * blockchain.reward:.2f})")
     print("=" * 60)
-    print("\n✅ DEMONSTRAÇÃO CONCLUÍDA COM SUCESSO!")
+    print("\n[OK] DEMONSTRAÇÃO CONCLUÍDA COM SUCESSO!")
     print("=" * 60)
 
 

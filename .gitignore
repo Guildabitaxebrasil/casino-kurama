@@ -41,3 +41,6 @@ ts_out.txt
 
 # Logs
 *.log
+
+# SSL Certificates (auto-gerados, ambiente local)
+certs/

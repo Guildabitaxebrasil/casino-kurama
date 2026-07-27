@@ -15,11 +15,16 @@ class Transaction:
 
     Uma transação transfere valor de uma carteira para outra e é
     assinada digitalmente pelo remetente para garantir autenticidade.
+
+    A assinatura cobre sender, receiver, amount, timestamp E
+    transaction_id, garantindo que nenhum campo pode ser alterado
+    após a assinatura sem invalidá-la.
     """
 
     def __init__(self, sender: str, receiver: str, amount: float,
                  timestamp: float = None, signature: str = None,
-                 transaction_id: str = None, sender_address: str = None):
+                 transaction_id: str = None, sender_address: str = None,
+                 nonce: str = None, fee: float = 0.0):
         """
         Inicializa uma nova transação.
 
@@ -30,21 +35,60 @@ class Transaction:
             timestamp: Timestamp Unix da criação (auto se None)
             signature: Assinatura digital (hex) ou None se não assinada
             transaction_id: ID único da transação
+            nonce: Nonce criptográfico para unicidade
         """
         self.sender = sender
         self.receiver = receiver
         self.amount = amount
-        self.timestamp = timestamp or time.time()
+        self.fee = fee                  # Taxa paga ao minerador
+
+        # ─── Validação de timestamp ───────────────────────────
+        # Transações coinbase (sender='0') são criadas internamente
+        # pelo sistema de mineração e não passam por validação.
+        # Para transações normais, impede timestamps do futuro
+        # (tolerância de 5 min) e timestamps muito antigos,
+        # prevenindo ataques de replay.
+        if sender == '0':
+            # Coinbase: aceita timestamps internos sem validação
+            self.timestamp = timestamp if timestamp is not None else time.time()
+        elif timestamp is not None:
+            now = time.time()
+            if timestamp > now + 300:
+                raise ValueError(
+                    f"Timestamp da transação está no futuro: {timestamp}"
+                )
+            if timestamp < now - 7200:  # 2 horas máximo no passado
+                raise ValueError(
+                    f"Timestamp da transação é muito antigo: {timestamp}"
+                )
+            if timestamp < 0:
+                raise ValueError(
+                    f"Timestamp negativo: {timestamp}"
+                )
+            self.timestamp = timestamp
+        else:
+            self.timestamp = time.time()
+
         self.signature = signature
         self.transaction_id = transaction_id or self._generate_id()
+        self.nonce = nonce
         self.sender_address = sender_address
 
     def _generate_id(self) -> str:
         """
-        Gera um ID único para a transação baseado em seus dados.
-        Isso garante que cada transação seja identificável de forma única.
+        Gera um ID único para a transação baseado em seus dados
+        e um nonce criptográfico.
+
+        O nonce (entropia de os.urandom) garante que mesmo transações
+        com mesmos sender, receiver, amount e timestamp gerem IDs
+        diferentes, prevenindo colisões intencionais e ataques de replay.
+
+        Returns:
+            Hash SHA-256 único de 64 caracteres hex
         """
-        raw = f"{self.sender}{self.receiver}{self.amount}{self.timestamp}"
+        nonce = CryptoUtils.generate_nonce()
+        self.nonce = nonce
+        raw = f"{self.sender}{self.receiver}{self.amount}{self.timestamp}{nonce}"
         return CryptoUtils.sha256(raw)
 
     def to_dict(self) -> dict:
@@ -59,8 +103,10 @@ class Transaction:
             'sender': self.sender,
             'receiver': self.receiver,
             'amount': self.amount,
+            'fee': self.fee,
             'timestamp': self.timestamp,
-            'signature': self.signature
+            'signature': self.signature,
+            'nonce': self.nonce
         }
         if self.sender_address:
             result['sender_address'] = self.sender_address
@@ -81,16 +127,23 @@ class Transaction:
             sender=data['sender'],
             receiver=data['receiver'],
             amount=data['amount'],
+            fee=data.get('fee', 0.0),
             timestamp=data.get('timestamp', time.time()),
             signature=data.get('signature'),
             transaction_id=data.get('transaction_id'),
-            sender_address=data.get('sender_address')
+            sender_address=data.get('sender_address'),
+            nonce=data.get('nonce')
         )
 
     def get_data_for_signing(self) -> str:
         """
         Retorna a string que deve ser assinada.
-        Inclui apenas os campos imutáveis da transação.
+        Inclui TODOS os campos imutáveis da transação:
+        sender, receiver, amount, timestamp E transaction_id.
+
+        A inclusão do transaction_id (com nonce) vincula a assinatura
+        ao ID único, impedindo que um atacante substitua o ID
+        após a assinatura (transação selada).
 
         Returns:
             String canônica para assinatura
@@ -99,7 +152,8 @@ class Transaction:
             'sender': self.sender,
             'receiver': self.receiver,
             'amount': self.amount,
-            'timestamp': self.timestamp
+            'timestamp': self.timestamp,
+            'transaction_id': self.transaction_id
         }
         return json.dumps(data, sort_keys=True)
 
@@ -139,6 +193,8 @@ class Transaction:
         # Verificações básicas de integridade
         if self.amount <= 0:
             return False
+        if self.fee < 0:
+            return False
         if not self.sender or not self.receiver:
             return False
         if not self.signature:
@@ -157,6 +213,7 @@ class Transaction:
 
     def __str__(self) -> str:
         """Representação legível da transação."""
+        fee_str = f" + {self.fee:.3f} fee" if self.fee > 0 else ""
         return (f"Transaction({self.transaction_id[:16]}... | "
                 f"{self.sender[:16]}... → {self.receiver[:16]}... | "
-                f"{self.amount:.2f} coins)")
+                f"{self.amount:.2f} KUR{fee_str})")

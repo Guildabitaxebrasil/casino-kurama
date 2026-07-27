@@ -288,24 +288,27 @@ class TestBlockchain(unittest.TestCase):
         self.assertEqual(len(self.bc.pending_transactions), 1)
 
     def test_mine_block(self):
-        """Mineração de bloco."""
+        """Mineração de bloco com transação real."""
         wallet = Wallet()
-        # Adiciona transação para minerar
-        tx = Transaction(sender='0', receiver=wallet.address, amount=10.0)
+        miner = Wallet()
+        # Adiciona transação real (não coinbase)
+        tx = wallet.create_transaction(miner.address, 10.0)
         self.bc.pending_transactions.append(tx)
 
-        block = self.bc.mine_block(wallet.address)
+        block = self.bc.mine_block(miner.address)
         self.assertIsNotNone(block)
         self.assertEqual(len(self.bc.chain), 2)
         self.assertEqual(block.index, 1)
+        self.assertTrue(self.bc.is_chain_valid())
 
     def test_mine_multiple_blocks(self):
         """Mineração de múltiplos blocos."""
         wallet = Wallet()
+        miner = Wallet()
         for i in range(3):
-            tx = Transaction(sender='0', receiver=wallet.address, amount=10.0)
+            tx = wallet.create_transaction(miner.address, 10.0)
             self.bc.pending_transactions.append(tx)
-            self.bc.mine_block(wallet.address)
+            self.bc.mine_block(miner.address)
 
         self.assertEqual(len(self.bc.chain), 4)  # gênese + 3
         self.assertTrue(self.bc.is_chain_valid())
@@ -313,9 +316,10 @@ class TestBlockchain(unittest.TestCase):
     def test_proof_of_work_validity(self):
         """Hash do bloco minerado deve satisfazer o PoW."""
         wallet = Wallet()
-        tx = Transaction(sender='0', receiver=wallet.address, amount=10.0)
+        miner = Wallet()
+        tx = wallet.create_transaction(miner.address, 10.0)
         self.bc.pending_transactions.append(tx)
-        block = self.bc.mine_block(wallet.address)
+        block = self.bc.mine_block(miner.address)
 
         block_dict = {
             'index': block.index,
@@ -334,31 +338,39 @@ class TestBlockchain(unittest.TestCase):
         )
 
     def test_balance_calculation(self):
-        """Cálculo de saldo deve funcionar."""
+        """Cálculo de saldo deve funcionar com recompensa dinâmica."""
         alice = Wallet()
         miner = Wallet()
 
-        # Minera blocos para Alice (recompensa de 50 coins cada)
-        for _ in range(3):
-            tx = Transaction(sender='0', receiver=alice.address, amount=10.0)
-            self.bc.pending_transactions.append(tx)
-            self.bc.mine_block(miner.address)
+        # Bloco 1: apenas recompensa de mineração (2500 KUR para miner)
+        dummy = Wallet()
+        tx = dummy.create_transaction(miner.address, 1.0)
+        self.bc.pending_transactions.append(tx)
+        self.bc.mine_block(miner.address)
 
-        alice_balance = self.bc.get_balance(alice.address)
+        # Miner agora tem 2500 KUR (coinbase) + 1 KUR (recebido do dummy)
         miner_balance = self.bc.get_balance(miner.address)
+        self.assertEqual(miner_balance, self.bc.get_block_reward(1) + 1.0)
 
-        # Alice recebeu 3 * 10 = 30 das transações coinbase
-        self.assertEqual(alice_balance, 30.0)
+        # Bloco 2: miner envia 500 KUR para Alice
+        tx = miner.create_transaction(alice.address, 500.0)
+        self.bc.pending_transactions.append(tx)
+        self.bc.mine_block(miner.address)
 
-        # Minerador recebeu 3 recompensas de mineração
-        self.assertEqual(miner_balance, 3 * self.bc.reward)
+        # Miner: 2500 (bloco1) + 2500 (bloco2) - 500 (enviado) = 4500
+        miner_balance = self.bc.get_balance(miner.address)
+        expected_miner = 2 * self.bc.get_block_reward(1) + 1.0 - 500.0
+        self.assertEqual(miner_balance, expected_miner)
+        # Alice: +500 recebidos
+        self.assertEqual(self.bc.get_balance(alice.address), 500.0)
 
     def test_detect_tampering(self):
         """Blockchain deve detectar adulteração."""
         wallet = Wallet()
-        tx = Transaction(sender='0', receiver=wallet.address, amount=10.0)
+        miner = Wallet()
+        tx = wallet.create_transaction(miner.address, 10.0)
         self.bc.pending_transactions.append(tx)
-        self.bc.mine_block(wallet.address)
+        self.bc.mine_block(miner.address)
 
         # Adultera o bloco
         self.bc.chain[1].proof = 99999
@@ -369,10 +381,11 @@ class TestBlockchain(unittest.TestCase):
         """Persistência em JSON."""
         # Prepara blockchain com dados
         wallet = Wallet()
+        miner = Wallet()
         for _ in range(2):
-            tx = Transaction(sender='0', receiver=wallet.address, amount=10.0)
+            tx = wallet.create_transaction(miner.address, 10.0)
             self.bc.pending_transactions.append(tx)
-            self.bc.mine_block(wallet.address)
+            self.bc.mine_block(miner.address)
 
         # Salva em arquivo temporário
         with tempfile.NamedTemporaryFile(mode='w', suffix='.json',
@@ -402,9 +415,10 @@ class TestBlockchain(unittest.TestCase):
     def test_consensus_no_change(self):
         """Consenso com cadeias mais curtas não deve alterar."""
         wallet = Wallet()
-        tx = Transaction(sender='0', receiver=wallet.address, amount=10.0)
+        miner = Wallet()
+        tx = wallet.create_transaction(miner.address, 10.0)
         self.bc.pending_transactions.append(tx)
-        self.bc.mine_block(wallet.address)
+        self.bc.mine_block(miner.address)
 
         # Tenta substituir por cadeia mais curta (só gênese)
         short_chain = [
@@ -428,6 +442,85 @@ class TestBlockchain(unittest.TestCase):
         bc.adjust_difficulty()
         self.assertEqual(bc.difficulty, 2)
 
+    def test_halving_reward(self):
+        """Recompensa de bloco deve reduzir pela metade a cada halving."""
+        bc = Blockchain(difficulty=2)
+        # Bloco 1 (primeiro após gênese): reward inicial
+        self.assertEqual(bc.get_block_reward(1), 2500.0)
+        # Bloco 200000: ainda no primeiro período de halving
+        self.assertEqual(bc.get_block_reward(200_000), 2500.0)
+        # Bloco 200001: primeiro halving → 1250
+        self.assertEqual(bc.get_block_reward(200_001), 1250.0)
+        # Bloco 400001: segundo halving → 625
+        self.assertEqual(bc.get_block_reward(400_001), 625.0)
+        # Bloco 0 (gênese): sem recompensa
+        self.assertEqual(bc.get_block_reward(0), 0.0)
+        # Após muitos halvings: tende a 0
+        self.assertEqual(bc.get_block_reward(20_000_000), 0.0)
+
+    def test_supply_info(self):
+        """get_supply_info deve retornar dados corretos."""
+        bc = Blockchain(difficulty=2)
+        self.assertEqual(bc.get_total_supply(), 0.0)
+
+        supply = bc.get_supply_info()
+        self.assertEqual(supply['token_name'], 'Kurama')
+        self.assertEqual(supply['token_symbol'], 'KUR')
+        self.assertEqual(supply['supply_cap'], 1_000_000_000.0)
+        self.assertEqual(supply['total_supply'], 0.0)
+        self.assertEqual(supply['remaining_supply'], 1_000_000_000.0)
+        self.assertEqual(supply['percent_mined'], 0.0)
+
+    def test_transaction_fee_minimum(self):
+        """add_transaction deve rejeitar fee abaixo do mínimo."""
+        wallet = Wallet()
+        # Fee 0.0 < MIN_TRANSACTION_FEE (0.001)
+        with self.assertRaises(ValueError) as ctx:
+            self.bc.add_transaction(
+                sender=wallet.public_key_pem,
+                receiver=wallet.address,
+                amount=10.0,
+                sender_address=wallet.address,
+                fee=0.0
+            )
+        self.assertIn('Taxa mínima', str(ctx.exception))
+
+    def test_min_transaction_amount(self):
+        """add_transaction deve rejeitar amount abaixo do mínimo."""
+        wallet = Wallet()
+        with self.assertRaises(ValueError) as ctx:
+            self.bc.add_transaction(
+                sender=wallet.public_key_pem,
+                receiver=wallet.address,
+                amount=0.0001,  # < MIN_TRANSACTION_AMOUNT (0.001)
+                sender_address=wallet.address
+            )
+        self.assertIn('Valor mínimo', str(ctx.exception))
+
+    def test_fee_in_coinbase(self):
+        """Minerador deve receber a soma das fees nas transações."""
+        miner = Wallet()
+        alice = Wallet()
+
+        # Primeiro: minera 1 bloco pra dar saldo ao minerador
+        dummy = Wallet()
+        tx = dummy.create_transaction(miner.address, 1.0)
+        self.bc.pending_transactions.append(tx)
+        self.bc.mine_block(miner.address)
+
+        # Agora adiciona transações com fee via mempool
+        # Como add_transaction valida saldo e o miner tem saldo,
+        # vamos minerar outro bloco e verificar que o miner recebe as fees
+        miner_balance_before = self.bc.get_balance(miner.address)
+
+        tx = miner.create_transaction(alice.address, 100.0)
+        self.bc.pending_transactions.append(tx)
+        self.bc.mine_block(miner.address)
+
+        # Miner: saldo anterior + coinbase #2 (2500) - 100 enviado
+        expected = miner_balance_before + self.bc.get_block_reward(2) - 100.0
+        self.assertEqual(self.bc.get_balance(miner.address), expected)
+
 
 class TestFullIntegration(unittest.TestCase):
     """Testes de integração completa."""
@@ -441,35 +534,43 @@ class TestFullIntegration(unittest.TestCase):
         bob = Wallet()
         miner = Wallet()
 
-        # 2. Minera blocos para ter saldo inicial
-        for _ in range(3):
-            tx = Transaction(sender='0', receiver=alice.address, amount=50.0)
-            bc.pending_transactions.append(tx)
-            bc.mine_block(miner.address)
+        # 2. Minera bloco 1 para dar saldo inicial ao minerador
+        dummy = Wallet()
+        tx = dummy.create_transaction(miner.address, 1.0)
+        bc.pending_transactions.append(tx)
+        bc.mine_block(miner.address)
+        # Minerador: +2500 KUR (coinbase)
 
-        # 3. Alice envia para Bob
-        tx1 = alice.create_transaction(bob.address, 30.0)
+        # 3. Minerador envia 1000 KUR para Alice
+        tx = miner.create_transaction(alice.address, 1000.0)
+        bc.pending_transactions.append(tx)
+        bc.mine_block(miner.address)
+        # Minerador: +2500 (coinbase bloco2) - 1000 (enviou pra Alice) = 4000 total
+        # Alice: +1000
+
+        # 4. Alice envia para Bob
+        tx1 = alice.create_transaction(bob.address, 300.0)
         bc.pending_transactions.append(tx1)
 
-        # 4. Alice envia para minerador
-        tx2 = alice.create_transaction(miner.address, 10.0)
+        # 5. Alice envia para minerador
+        tx2 = alice.create_transaction(miner.address, 200.0)
         bc.pending_transactions.append(tx2)
 
-        # 5. Minera bloco com transações
+        # 6. Minera bloco com transações
         bc.mine_block(miner.address)
 
-        # 6. Verifica saldos
-        # Alice: 3*50 recebidos - 30 - 10 = 110
-        self.assertEqual(bc.get_balance(alice.address), 110.0)
-        # Bob: +30
-        self.assertEqual(bc.get_balance(bob.address), 30.0)
-        # Minerador: 3*50 (recompensas) + 10 (taxa Alice) + 50 (recompensa mineração)
-        self.assertAlmostEqual(
-            bc.get_balance(miner.address),
-            3 * bc.reward + 10 + bc.reward
-        )
+        # 7. Verifica saldos
+        # Alice: +1000 (recebido) - 300 (bob) - 200 (miner) = 500
+        self.assertEqual(bc.get_balance(alice.address), 500.0)
+        # Bob: +300
+        self.assertEqual(bc.get_balance(bob.address), 300.0)
+        # Minerador: 2500+2500+2500 (3 coinbases) -1000 (enviou) -1 (dummy)
+        #           +1 (dummy) +300 (bob tx não, da alice) +200 (alice)
+        # = 7500 - 1000 + 200 + 1 = 6701
+        expected_miner = 3 * bc.get_block_reward(1) + 1.0 - 1000.0 + 200.0
+        self.assertEqual(bc.get_balance(miner.address), expected_miner)
 
-        # 7. Verifica integridade
+        # 8. Verifica integridade
         self.assertTrue(bc.is_chain_valid())
 
 

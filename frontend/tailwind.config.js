@@ -15,6 +15,7 @@ export default {
         'kur-red': '#f85149',
         'kur-yellow': '#d29922',
         'kur-purple': '#bc8cff',
+        'kur-orange': '#f0883e',
       },
       fontFamily: {
         mono: ['JetBrains Mono', 'Fira Code', 'Consolas', 'monospace'],

@@ -10,14 +10,21 @@ import json
 import time
 import os
 import threading
+import statistics
 from typing import List, Optional, Callable
 from .crypto_utils import CryptoUtils
 from .block import Block
 from .transaction import Transaction
+from config import (
+    INITIAL_BLOCK_REWARD, HALVING_INTERVAL, TOTAL_SUPPLY_CAP,
+    MIN_TRANSACTION_AMOUNT, MIN_TRANSACTION_FEE, COINBASE_SENDER,
+    TOKEN_NAME, TOKEN_SYMBOL
+)
 
 
-# Valor fixo da recompensa de mineração (coinbase)
-REWARD_AMOUNT = 50.0
+# Recompensa de mineração (coinbase) — valor inicial
+# O valor efetivo segue halving a cada HALVING_INTERVAL blocos
+REWARD_AMOUNT = INITIAL_BLOCK_REWARD
 
 # Limites da mempool
 MAX_PENDING_TX = 100           # Máximo de transações pendentes
@@ -59,6 +66,13 @@ class Blockchain:
 
         # A cadeia de blocos propriamente dita
         self.chain: List[Block] = chain if chain else []
+
+        # ─── Lock da Dificuldade ─────────────────────────────────
+        # DEVE ser definido ANTES de adjust_difficulty(), que o adquire.
+        # Protege self.difficulty contra race conditions durante
+        # mineração concorrente e recebimento de blocos via P2P.
+        self._difficulty_lock = threading.Lock()
+
         self.adjust_difficulty()
 
         # Se a cadeia está vazia, cria o bloco gênese
@@ -74,6 +88,23 @@ class Blockchain:
             'on_transaction_expired': [],# Callbacks: (transaction) -> None
         }
         self._callback_lock = threading.Lock()
+
+        # ─── Lock de Mineração ───────────────────────────────────
+        # Previne race conditions que poderiam criar múltiplas
+        # coinbases ou corromper a cadeia durante mineração concorrente.
+        self._mining_lock = threading.Lock()
+
+        # ─── Lock da Mempool ─────────────────────────────────────
+        # Protege pending_transactions contra race conditions entre
+        # add_transaction(), mine_block() e _cleanup_pending().
+        # Sem este lock, threads concorrentes podem causar:
+        # - Double-spend parcial (tx adicionada após verificação de saldo)
+        # - Transações perdidas (append após clear do mine_block)
+        # - Estado inconsistente entre verificação e escrita
+        self._mempool_lock = threading.Lock()
+
+        # ─── Peers URLs (para tempo de rede) ─────────────────────
+        self._peer_urls: List[str] = []
 
         # ─── Timer de Limpeza da Mempool ──────────────────────────
         self._cleanup_timer = None
@@ -106,6 +137,95 @@ class Blockchain:
             timestamp=0
         )
         self.chain.append(genesis)
+
+    # ─── Tempo de Rede ────────────────────────────────────────────
+
+    def set_peer_urls(self, urls: List[str]):
+        """Define as URLs dos peers para sincronização de tempo."""
+        self._peer_urls = list(urls)
+
+    def _get_network_time(self) -> Optional[float]:
+        """
+        Obtém o tempo de rede usando mediana dos timestamps dos peers.
+
+        Estratégia:
+        1. Tenta NTP primeiro (preciso, mas pode falhar sem internet)
+        2. Fallback: mediana dos timestamps /health dos peers
+        3. Fallback final: time.time() local
+
+        A mediana é resistente a outliers — um nó malicioso com
+        relógio adulterado não desvia a mediana sozinho.
+
+        Returns:
+            Timestamp Unix ou None se indisponível
+        """
+        from config import USE_NETWORK_TIME
+        if not USE_NETWORK_TIME:
+            return None
+
+        # Tenta NTP
+        try:
+            import ntplib
+            client = ntplib.NTPClient()
+            response = client.request('pool.ntp.org', version=3, timeout=2)
+            return response.tx_time
+        except ImportError:
+            pass  # ntplib não instalado
+        except Exception as e:
+            print(f"[WARN] NTP falhou: {e}")
+
+        # Fallback: mediana dos peers
+        if self._peer_urls:
+            times = [time.time()]
+            for url in self._peer_urls:
+                try:
+                    import requests
+                    resp = requests.get(f'{url}/api/health', timeout=1)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        if 'timestamp' in data:
+                            times.append(data['timestamp'])
+                except requests.exceptions.RequestException as e:
+                    pass  # Peer offline, ignorar
+                except Exception as e:
+                    print(f"[WARN] Erro ao consultar peer {url}: {e}")
+                    pass
+            if times:
+                return statistics.median(times)
+
+        return None
+
+    def _validate_timestamp(self, block_timestamp: float) -> bool:
+        """
+        Valida timestamp contra tempo de rede.
+
+        Rejeita blocos com:
+        - Timestamp muito no futuro (> MAX_TIMESTAMP_DRIFT segundos)
+        - Timestamp muito no passado (> MIN_TIMESTAMP_AGE segundos)
+
+        Args:
+            block_timestamp: Timestamp do bloco a validar
+
+        Returns:
+            True se o timestamp está dentro da janela aceitável
+        """
+        from config import MAX_TIMESTAMP_DRIFT, MIN_TIMESTAMP_AGE
+
+        network_time = self._get_network_time()
+        now = network_time or time.time()
+
+        # Não pode estar no futuro além da tolerância
+        if block_timestamp > now + MAX_TIMESTAMP_DRIFT:
+            print(f"[ERR] Timestamp {block_timestamp} muito no futuro "
+                  f"(tolerância: {MAX_TIMESTAMP_DRIFT}s)")
+            return False
+
+        # Não pode estar muito no passado
+        if now - block_timestamp > MIN_TIMESTAMP_AGE:
+            print(f"[ERR] Timestamp {block_timestamp} muito no passado")
+            return False
+
+        return True
 
     # ─── Sistema de Eventos ────────────────────────────────────────
 
@@ -159,7 +279,7 @@ class Blockchain:
             try:
                 cb(*args, **kwargs)
             except Exception as e:
-                print(f"⚠️ Erro no callback '{event}': {e}")
+                print(f"[WARN] Erro no callback '{event}': {e}")
 
     # ─── Gerenciamento da Mempool ──────────────────────────────────
 
@@ -175,29 +295,29 @@ class Blockchain:
     def _cleanup_pending(self):
         """
         Remove transações expiradas da mempool.
-        Transações com timestamp mais antigo que TX_EXPIRY_SECONDS
-        são removidas automaticamente para evitar acúmulo.
+        Thread-safe via _mempool_lock.
         """
-        if not self.pending_transactions:
-            self._start_cleanup_timer()
-            return
+        with self._mempool_lock:
+            if not self.pending_transactions:
+                self._start_cleanup_timer()
+                return
 
-        now = time.time()
-        valid = []
-        expired = []
+            now = time.time()
+            valid = []
+            expired = []
 
-        for tx in self.pending_transactions:
-            tx_time = tx.timestamp
-            if now - tx_time > TX_EXPIRY_SECONDS:
-                expired.append(tx)
-            else:
-                valid.append(tx)
+            for tx in self.pending_transactions:
+                tx_time = tx.timestamp
+                if now - tx_time > TX_EXPIRY_SECONDS:
+                    expired.append(tx)
+                else:
+                    valid.append(tx)
 
-        if expired:
-            self.pending_transactions = valid
-            for tx in expired:
-                self._emit('on_transaction_expired', tx)
-            print(f"🧹 Mempool: {len(expired)} transações expiradas removidas")
+            if expired:
+                self.pending_transactions = valid
+                for tx in expired:
+                    self._emit('on_transaction_expired', tx)
+                print(f"[CLEAN] Mempool: {len(expired)} transações expiradas removidas")
 
         self._start_cleanup_timer()
 
@@ -216,12 +336,16 @@ class Blockchain:
                 'avg_value': 0,
                 'oldest_tx': 0,
                 'coinbase_count': 0,
+                'total_fees': 0.0,
             }
 
         now = time.time()
         values = [tx.amount for tx in self.pending_transactions]
         coinbase_count = sum(
             1 for tx in self.pending_transactions if tx.sender == '0'
+        )
+        total_fees = sum(
+            getattr(tx, 'fee', 0.0) for tx in self.pending_transactions
         )
 
         return {
@@ -231,6 +355,7 @@ class Blockchain:
             'avg_value': sum(values) / len(values),
             'oldest_tx': int(now - min(tx.timestamp for tx in self.pending_transactions)),
             'coinbase_count': coinbase_count,
+            'total_fees': total_fees,
         }
 
     def has_transaction(self, tx_id: str) -> bool:
@@ -252,38 +377,108 @@ class Blockchain:
         A cada 10 blocos, recalcula. Este é um mecanismo simplificado
         do algoritmo do Bitcoin que ajusta a cada 2016 blocos.
 
+        THREAD-SAFE: protegido por _difficulty_lock para prevenir
+        race conditions com recebimento de blocos via P2P.
+
         A dificuldade aumenta se os blocos estão sendo minerados
         rápido demais (>30s por bloco) e diminui se estão lentos (<5s).
         """
-        if len(self.chain) % 10 == 0 and len(self.chain) > 0:
-            # Pega o timestamp do bloco atual e do bloco 10 atrás
-            last_block = self.chain[-1]
-            ten_blocks_ago = self.chain[-10] if len(self.chain) >= 10 else None
+        with self._difficulty_lock:
+            if len(self.chain) % 10 == 0 and len(self.chain) > 0:
+                # Pega o timestamp do bloco atual e do bloco 10 atrás
+                last_block = self.chain[-1]
+                ten_blocks_ago = self.chain[-10] if len(self.chain) >= 10 else None
 
-            if ten_blocks_ago:
-                time_span = last_block.timestamp - ten_blocks_ago.timestamp
-                target_time = 300  # Esperado: 30s * 10 blocos = 300s
+                if ten_blocks_ago:
+                    time_span = last_block.timestamp - ten_blocks_ago.timestamp
+                    target_time = 300  # Esperado: 30s * 10 blocos = 300s
 
-                if time_span < target_time / 2:  # Muito rápido: aumenta dificuldade
-                    self.difficulty += 1
-                elif time_span > target_time * 2:  # Muito lento: diminui
-                    self.difficulty = max(1, self.difficulty - 1)
+                    if time_span < target_time / 2:  # Muito rápido: aumenta dificuldade
+                        self.difficulty += 1
+                    elif time_span > target_time * 2:  # Muito lento: diminui
+                        self.difficulty = max(1, self.difficulty - 1)
+
+    # ─── Recompensa e Halving ──────────────────────────────────────
+
+    def get_block_reward(self, block_index: int) -> float:
+        """
+        Calcula a recompensa de bloco considerando o halving.
+
+        A cada HALVING_INTERVAL blocos, a recompensa é reduzida pela
+        metade. Bloco 1 (primeiro após gênese) recebe reward inicial.
+        Gênese (índice 0) não recebe recompensa.
+
+        Ex: 2500 → 1250 → 625 → 312.5 → ...
+
+        Args:
+            block_index: Índice do bloco (0 = gênese)
+
+        Returns:
+            Recompensa do bloco em KUR
+        """
+        if block_index <= 0:
+            return 0.0
+        halvings = (block_index - 1) // HALVING_INTERVAL
+        reward = INITIAL_BLOCK_REWARD / (2 ** halvings)
+        # Se o valor for insignificante (< 0.0001 KUR), considera zero
+        if reward < 0.0001:
+            return 0.0
+        return reward
+
+    def get_total_supply(self) -> float:
+        """
+        Calcula o supply total minerado até agora.
+        Soma todas as transações coinbase (sender='0') em todos os blocos.
+
+        Returns:
+            Total de KUR já minerados
+        """
+        total = 0.0
+        for block in self.chain:
+            for tx in block.transactions:
+                if hasattr(tx, 'sender') and tx.sender == COINBASE_SENDER:
+                    total += tx.amount
+        return total
+
+    def get_supply_info(self) -> dict:
+        """
+        Retorna informações completas sobre o supply do token.
+
+        Returns:
+            Dict com total_supply, remaining, supply_cap, percent_mined, etc.
+        """
+        total = self.get_total_supply()
+        remaining = max(0.0, TOTAL_SUPPLY_CAP - total)
+        percent = (total / TOTAL_SUPPLY_CAP) * 100.0 if TOTAL_SUPPLY_CAP > 0 else 0.0
+        return {
+            'token_name': TOKEN_NAME,
+            'token_symbol': TOKEN_SYMBOL,
+            'total_supply': total,
+            'supply_cap': TOTAL_SUPPLY_CAP,
+            'remaining_supply': remaining,
+            'percent_mined': round(percent, 4),
+            'blocks_mined': len(self.chain) - 1  # exclui gênese
+        }
 
     # ─── Transações Pendentes ─────────────────────────────────────
 
     def add_transaction(self, sender: str, receiver: str, amount: float,
                         signature: str = None,
                         sender_address: str = None,
-                        timestamp: float = None) -> int:
+                        timestamp: float = None,
+                        fee: float = 0.0,
+                        transaction_id: str = None) -> int:
         """
         Adiciona uma nova transação à pool de transações pendentes.
 
         Args:
             sender: Chave pública do remetente
             receiver: Endereço do destinatário
-            amount: Quantidade a transferir
+            amount: Quantidade a transferir (KUR)
             signature: Assinatura digital (hex)
             sender_address: Endereço do remetente (para cálculo de saldo)
+            fee: Taxa da transação (KUR) — paga ao minerador
+            transaction_id: ID pré-definido (ex: para transações pré-assinadas)
 
         Returns:
             Índice do próximo bloco que incluirá esta transação
@@ -291,43 +486,92 @@ class Blockchain:
         Raises:
             ValueError: Se a transação é inválida
         """
-        # Cria a transação (usa timestamp original se fornecido,
-        # para preservar a validade da assinatura)
-        tx = Transaction(
-            sender=sender,
-            receiver=receiver,
-            amount=amount,
-            timestamp=timestamp,
-            signature=signature,
-            sender_address=sender_address
-        )
+        # ─── Lock da mempool para atomicidade ──────────────────
+        # Protege contra race conditions: verificação de saldo,
+        # anti-replay na cadeia e append devem ser atômicos.
+        # Sem o lock, entre a verificação e o append outro
+        # mine_block pode consumir transações ou outro
+        # add_transaction pode criar double-spend.
+        with self._mempool_lock:
 
-        # Valida a transação
-        if not tx.is_valid():
-            raise ValueError("Transação inválida: assinatura ou dados incorretos")
-
-        # Verifica se o remetente tem saldo suficiente (exceto coinbase)
-        if sender != '0':
-            balance = self.get_balance(sender_address or sender)
-            if balance < amount:
+            # ─── Bloqueia coinbase falsa ───────────────────────
+            if sender == '0':
                 raise ValueError(
-                    f"Saldo insuficiente: {balance:.2f} < {amount:.2f}"
+                    "Transações coinbase (sender='0') são exclusivas do "
+                    "sistema de mineração e não podem ser criadas via API"
                 )
 
-        # Verifica duplicata na mempool
-        if self.has_transaction(tx.transaction_id):
-            raise ValueError(f"Transação duplicada: {tx.transaction_id[:16]}...")
+            # ─── Valida valor mínimo da transação ──────────────
+            if amount < MIN_TRANSACTION_AMOUNT:
+                raise ValueError(
+                    f"Valor mínimo por transação: {MIN_TRANSACTION_AMOUNT} KUR"
+                )
 
-        # Verifica limite máximo da mempool
-        if len(self.pending_transactions) >= MAX_PENDING_TX:
-            raise ValueError(
-                f"Mempool cheia ({MAX_PENDING_TX} transações). "
-                "Aguarde a mineração de um novo bloco."
+            # ─── Valida taxa mínima ────────────────────────────
+            if fee < MIN_TRANSACTION_FEE:
+                raise ValueError(
+                    f"Taxa mínima por transação: {MIN_TRANSACTION_FEE} KUR"
+                )
+
+            # ─── Valida endereço do destinatário ───────────────
+            if not CryptoUtils.is_valid_address(receiver):
+                raise ValueError(
+                    f"Endereço inválido: {receiver[:20]}..."
+                )
+
+            tx = Transaction(
+                sender=sender, receiver=receiver, amount=amount,
+                timestamp=timestamp, signature=signature,
+                sender_address=sender_address, fee=fee,
+                transaction_id=transaction_id
             )
 
-        self.pending_transactions.append(tx)
-        self._emit('on_transaction_added', tx)
-        return self.last_block.index + 1
+            if not tx.is_valid():
+                raise ValueError("Transação inválida: assinatura ou dados incorretos")
+
+            if sender_address is not None:
+                derived = CryptoUtils.public_key_to_address(sender)
+                if sender_address != derived:
+                    raise ValueError("sender_address não corresponde à chave pública.")
+
+            if sender != '0':
+                balance = self.get_balance(sender_address or sender)
+                pending_spent = sum(
+                    tx.amount + getattr(tx, 'fee', 0.0)
+                    for tx in self.pending_transactions
+                    if (tx.sender == sender or
+                        tx.sender_address == sender_address)
+                )
+                available = balance - pending_spent
+                if available < amount + fee:
+                    raise ValueError(
+                        f"Saldo insuficiente: {available:.2f} disponível "
+                        f"(saldo: {balance:.2f}, pendente: {pending_spent:.2f}, "
+                        f"necessário: {amount + fee:.2f})"
+                    )
+
+            if self.has_transaction(tx.transaction_id):
+                raise ValueError(
+                    f"Transação duplicada na mempool: {tx.transaction_id[:16]}..."
+                )
+
+            for block in self.chain:
+                for existing_tx in block.transactions:
+                    if existing_tx.transaction_id == tx.transaction_id:
+                        raise ValueError(
+                            f"Transação {tx.transaction_id[:16]}... já minerada "
+                            f"no bloco #{block.index}. Replay bloqueado."
+                        )
+
+            if len(self.pending_transactions) >= MAX_PENDING_TX:
+                raise ValueError(
+                    f"Mempool cheia ({MAX_PENDING_TX} transações). "
+                    "Aguarde a mineração de um novo bloco."
+                )
+
+            self.pending_transactions.append(tx)
+            self._emit('on_transaction_added', tx)
+            return self.last_block.index + 1
 
     @property
     def last_block(self) -> Optional[Block]:
@@ -353,31 +597,82 @@ class Blockchain:
         Returns:
             O bloco minerado ou None se não há transações
         """
-        # Adiciona transação de recompensa (coinbase transaction)
-        reward_tx = Transaction(
-            sender='0',  # Sistema
-            receiver=miner_address,
-            amount=self.reward,
-            timestamp=time.time()
-        )
-        self.pending_transactions.append(reward_tx)
+        # ─── Lock de mineração para prevenir race conditions ────
+        # Garante que apenas um processo minera por vez, evitando
+        # múltiplas coinbases no mesmo bloco ou cadeias corrompidas.
+        with self._mining_lock:
+            return self._mine_block_unsafe(miner_address)
+
+    def _mine_block_unsafe(self, miner_address: str) -> Optional[Block]:
+        """
+        Execução interna da mineração (sem lock, chamada pelo
+        método público que adquire o lock).
+
+        Args:
+            miner_address: Endereço do minerador
+
+        Returns:
+            O bloco minerado
+        """
+        # ─── Snapshot da mempool sob lock ──────────────────────
+        # Garante atomicidade: snapshots de pending_transactions
+        # prevenindo race conditions com add_transaction().
+        # Libera o lock ANTES do PoW (operação longa).
+        with self._mempool_lock:
+            if len(self.pending_transactions) >= MAX_PENDING_TX:
+                print("[WARN] Mempool cheia, não é possível minerar")
+                return None
+
+            # ─── Calcula recompensa com halving + fees ────────────
+            new_index = self.last_block.index + 1 if self.last_block else 1
+            base_reward = self.get_block_reward(new_index)
+            total_fees = sum(
+                getattr(tx, 'fee', 0.0) for tx in self.pending_transactions
+            )
+            total_reward = base_reward + total_fees
+
+            # ─── Verifica supply cap ────────────────────────────
+            current_supply = self.get_total_supply()
+            if current_supply + total_reward > TOTAL_SUPPLY_CAP:
+                # Capa o reward para não ultrapassar 1 bilhão
+                total_reward = max(total_fees, TOTAL_SUPPLY_CAP - current_supply)
+
+            reward_tx = Transaction(
+                sender='0', receiver=miner_address,
+                amount=total_reward, timestamp=time.time()
+            )
+
+            # Coinbase inserida no índice 0
+            self.pending_transactions.insert(0, reward_tx)
+
+            # Snapshot atômico para mineração
+            tx_list = list(self.pending_transactions)
+            tx_count = len(self.pending_transactions)
+            self.pending_transactions = []  # Limpa sob lock
+
+        # ─── Mineração (fora do lock) ──────────────────────────
+        # O PoW é computacionalmente intenso e não deve travar
+        # outras operações (add_transaction, validação).
+        # A coinbase já está incluída no snapshot tx_list (linha 535-538)
+        # e NÃO deve ser reinserida fora do lock (anti-race condition).
+        # add_transaction() bloqueia sender='0', impedindo coinbase externa.
 
         # Prepara o bloco
         new_index = self.last_block.index + 1 if self.last_block else 0
         previous_hash = self.last_block.hash if self.last_block else '0' * 64
 
-        print(f"\n⛏️  Minerando bloco #{new_index}...")
+        print(f"\n[MINE] Minerando bloco #{new_index}...")
         print(f"   Dificuldade: {self.difficulty}")
-        print(f"   Transações: {len(self.pending_transactions)}")
+        print(f"   Transações: {tx_count}")
+        print(f"   Recompensa base: {base_reward} KUR (halving #{new_index // HALVING_INTERVAL})")
+        if total_fees > 0:
+            print(f"   Taxas coletadas: {total_fees} KUR")
 
         # ─── Proof of Work ──────────────────────────────────────────
-        # O minerador busca um nonce (proof) tal que o hash do bloco
-        # comece com 'difficulty' zeros. Isso exige força bruta e
-        # consome energia computacional intencionalmente.
         timestamp = time.time()
         tx_dicts = [
             tx.to_dict() if hasattr(tx, 'to_dict') else tx
-            for tx in self.pending_transactions
+            for tx in tx_list
         ]
         merkle_root = CryptoUtils.merkle_root(tx_dicts)
         proof = self._proof_of_work(
@@ -387,7 +682,7 @@ class Blockchain:
         # Cria o bloco com o nonce encontrado
         block = Block(
             index=new_index,
-            transactions=self.pending_transactions.copy(),
+            transactions=tx_list,
             proof=proof,
             previous_hash=previous_hash,
             difficulty=self.difficulty,
@@ -395,17 +690,25 @@ class Blockchain:
             merkle_root=merkle_root
         )
 
-        # Limpa transações pendentes (as que foram mineradas)
-        self.pending_transactions = []
+        # ─── Merge Atômico da Mempool ────────────────────────────
+        # Em vez de limpar cegamente self.pending_transactions (que
+        # descartaria TXs adicionadas durante o PoW — N-C01), fazemos
+        # merge atômico sob lock: removemos apenas TXs mineradas.
+        with self._mempool_lock:
+            mined_ids = {tx.transaction_id for tx in tx_list}
+            self.pending_transactions = [
+                tx for tx in self.pending_transactions
+                if tx.transaction_id not in mined_ids
+            ]
 
         # Adiciona à cadeia
         self.chain.append(block)
         self.adjust_difficulty()
 
-        print(f"✅ Bloco #{new_index} minerado!")
+        print(f"[OK] Bloco #{new_index} minerado!")
         print(f"   Hash: {block.hash[:32]}...")
         print(f"   Nonce: {proof}")
-        print(f"   Recompensa: {self.reward} coins para {miner_address[:16]}...")
+        print(f"   Recompensa: {total_reward:.2f} KUR para {miner_address[:16]}...")
 
         # Notifica listeners
         self._emit('on_block_mined', block)
@@ -493,7 +796,7 @@ class Blockchain:
         # Verifica o bloco gênese
         genesis = chain[0]
         if genesis.index != 0 or genesis.previous_hash != '0' * 64:
-            print("❌ Bloco gênese inválido!")
+            print("[ERR] Bloco gênese inválido!")
             return False
 
         # Percorre todos os blocos a partir do índice 1
@@ -504,14 +807,14 @@ class Blockchain:
             # 1. Verifica se o hash do bloco está correto
             calculated_hash = current.calculate_hash()
             if current.hash != calculated_hash:
-                print(f"❌ Bloco #{current.index}: hash inválido!")
+                print(f"[ERR] Bloco #{current.index}: hash inválido!")
                 print(f"   Esperado: {calculated_hash}")
                 print(f"   Atual:    {current.hash}")
                 return False
 
             # 2. Verifica a ligação com o bloco anterior
             if current.previous_hash != previous.hash:
-                print(f"❌ Bloco #{current.index}: previous_hash incorreto!")
+                print(f"[ERR] Bloco #{current.index}: previous_hash incorreto!")
                 print(f"   Esperado: {previous.hash}")
                 print(f"   Atual:    {current.previous_hash}")
                 return False
@@ -532,15 +835,21 @@ class Blockchain:
             }
             block_hash = CryptoUtils.hash_block(block_dict)
             if not CryptoUtils.is_hash_valid(block_hash, block_difficulty):
-                print(f"❌ Bloco #{current.index}: Proof of Work inválido!")
+                print(f"[ERR] Bloco #{current.index}: Proof of Work inválido!")
                 return False
 
             # 4. Verifica transações do bloco
             if not current.is_valid_transactions():
-                print(f"❌ Bloco #{current.index}: transações inválidas!")
+                print(f"[ERR] Bloco #{current.index}: transações inválidas!")
                 return False
 
-        print("✅ Blockchain válida e íntegra!")
+        # 5. Verifica supply cap (cumulativo)
+        total_supply = self.get_total_supply()
+        if total_supply > TOTAL_SUPPLY_CAP + 0.01:  # tolerância de float
+            print(f"[ERR] Supply cap excedido: {total_supply:.2f} > {TOTAL_SUPPLY_CAP:.0f}")
+            return False
+
+        print("[OK] Blockchain válida e íntegra!")
         return True
 
     # ─── Consultas ────────────────────────────────────────────────
@@ -570,9 +879,11 @@ class Blockchain:
                     balance += tx_dict['amount']
 
                 # Enviou coins (saída) - verifica sender_address também
+                # Subtrai amount + fee (custo total para o sender)
                 if (tx_dict['sender'] == address or
                         tx_dict.get('sender_address') == address):
                     balance -= tx_dict['amount']
+                    balance -= tx_dict.get('fee', 0.0)
 
         return balance
 
@@ -634,7 +945,7 @@ class Blockchain:
         with open(filepath, 'w') as f:
             json.dump(data, f, indent=2)
 
-        print(f"💾 Blockchain salva em {filepath} "
+        print(f"[SAVE] Blockchain salva em {filepath} "
               f"({len(self.chain)} blocos, "
               f"{len(self.pending_transactions)} transações pendentes)")
 
@@ -682,7 +993,7 @@ class Blockchain:
         # Restaura transações pendentes
         blockchain.pending_transactions = pending_txs
 
-        print(f"📂 Blockchain carregada de {filepath} "
+        print(f"[LOAD] Blockchain carregada de {filepath} "
               f"({len(chain)} blocos, "
               f"{len(pending_txs)} transações pendentes)")
 
@@ -705,16 +1016,37 @@ class Blockchain:
 
     # ─── Consenso ──────────────────────────────────────────────────
 
+    def _calculate_cumulative_work(self, chain: List[Block]) -> float:
+        """
+        Calcula o trabalho acumulado de uma cadeia (cumulative work).
+
+        Diferente do consenso ingênuo de "cadeia mais longa", o trabalho
+        acumulado considera a DIFICULDADE de cada bloco. Um bloco com
+        difficulty=4 requer 2^4 = 16 hashes esperados, enquanto
+        difficulty=1 requer apenas 2^1 = 2 hashes.
+
+        Isso impede que um atacante mine blocos com dificuldade baixa
+        e apresente uma cadeia mais "longa" que a legítima.
+
+        Returns:
+            Float representando o trabalho total acumulado
+        """
+        total_work = 0.0
+        for block in chain:
+            block_diff = block.difficulty if block.difficulty is not None else self.difficulty
+            total_work += 2 ** block_diff
+        return total_work
+
     def resolve_conflicts(self, other_chains: List[List[dict]]) -> bool:
         """
-        Algoritmo de consenso simplificado.
+        Algoritmo de consenso baseado em CUMULATIVE WORK.
 
-        Regra: a cadeia válida MAIS LONGA é a correta.
-        Este é o princípio do "maior trabalho acumulado" do Bitcoin.
+        Regra: a cadeia válida com MAIOR TRABALHO ACUMULADO é a correta.
+        Este é o princípio do "maior trabalho" do Bitcoin (e não
+        simplesmente "cadeia mais longa").
 
-        Quando um nó recebe cadeias de outros nós:
-        1. Para cada cadeia recebida, verifica se é válida
-        2. Se for válida E mais longa que a local, substitui a local
+        O uso de cumulative work impede que um atacante crie uma cadeia
+        longa com dificuldade baixa e a apresente como legítima.
 
         Args:
             other_chains: Lista de cadeias (listas de dicts) de outros nós
@@ -723,7 +1055,7 @@ class Blockchain:
             True se a cadeia local foi substituída
         """
         new_chain = None
-        max_length = len(self.chain)
+        best_work = self._calculate_cumulative_work(self.chain)
 
         for chain_data in other_chains:
             # Reconstrói a cadeia recebida
@@ -732,35 +1064,94 @@ class Blockchain:
                 block = Block.from_dict(block_data, Transaction)
                 candidate_chain.append(block)
 
-            # Verifica se é mais longa e válida
-            if (len(candidate_chain) > max_length and
+            # Verifica cumulative work e validade
+            candidate_work = self._calculate_cumulative_work(candidate_chain)
+            if (candidate_work > best_work and
                     self._validate_external_chain(candidate_chain)):
                 new_chain = candidate_chain
-                max_length = len(candidate_chain)
+                best_work = candidate_work
 
         if new_chain:
             old_len = len(self.chain)
+
+            # ─── REORG Limit ─────────────────────────────────────
+            # Anti-deep reorg: verifica se a nova cadeia compartilha
+            # os primeiros REORG_LIMIT blocos com a local. Impede que
+            # um atacante substitua blocos muito antigos.
+            from config import REORG_LIMIT
+            if REORG_LIMIT > 0:
+                common_blocks = 0
+                for i in range(min(old_len, len(new_chain))):
+                    if (self.chain[i].hash == new_chain[i].hash and
+                            self.chain[i].index == new_chain[i].index):
+                        common_blocks += 1
+                    else:
+                        break
+                if old_len - common_blocks > REORG_LIMIT:
+                    print(f"[ERR] Consenso: reorganização de "
+                          f"{old_len - common_blocks} blocos > "
+                          f"limite de {REORG_LIMIT}. Rejeitada.")
+                    return False
+
             self.chain = new_chain
-            print(f"🔄 Consenso: cadeia substituída "
-                  f"(nova: {len(self.chain)} blocos)")
+
+            # ─── Merge da Mempool Pós-Consenso ───────────────────
+            # Re-valida transações pendentes contra a nova cadeia.
+            # Remove TXs já mineradas e re-verifica saldos.
+            with self._mempool_lock:
+                valid_txs = []
+                for tx in self.pending_transactions:
+                    # Pula coinbase remanescente, se houver
+                    if tx.sender == '0':
+                        continue
+                    # TX já minerada na nova cadeia?
+                    already_mined = any(
+                        bt.transaction_id == tx.transaction_id
+                        for block in self.chain
+                        for bt in block.transactions
+                    )
+                    if already_mined:
+                        continue
+                    # Re-valida assinatura
+                    if not tx.is_valid():
+                        continue
+                    # Re-verifica saldo contra nova cadeia
+                    sender_addr = tx.sender_address or tx.sender
+                    balance = self.get_balance(sender_addr)
+                    tx_fee = getattr(tx, 'fee', 0.0)
+                    if balance >= tx.amount + tx_fee:
+                        valid_txs.append(tx)
+                self.pending_transactions = valid_txs
+                print(f"[SYNC] Mempool mesclada: {len(valid_txs)} TXs mantidas "
+                      f"após consenso")
+
+            print(f"[SYNC] Consenso: cadeia substituída "
+                  f"(trabalho acumulado: {best_work:.0f})")
             self._emit('on_chain_replaced', old_len, len(self.chain))
             return True
 
-        print(f"✅ Consenso: cadeia local mantida "
-              f"({len(self.chain)} blocos)")
+        print(f"[OK] Consenso: cadeia local mantida "
+              f"(trabalho acumulado: {best_work:.0f})")
         return False
 
     def _validate_external_chain(self, chain: List[Block]) -> bool:
         """
         Valida uma cadeia recebida de outro nó.
-        Verificação menos rigorosa que a local (não usa a dificuldade local).
+
+        Validações de PRODUÇÃO:
+        1. Estrutura básica (hash, previous_hash, PoW)
+        2. Dificuldade mínima aceitável (anti-51% attack)
+        3. Salto de dificuldade controlado (anti-manipulação)
+        4. Timestamp dentro da janela de rede
 
         Args:
             chain: Cadeia a validar
 
         Returns:
-            True se a cadeia é estruturalmente válida
+            True se a cadeia é válida para consenso
         """
+        from config import MIN_ACCEPTABLE_DIFFICULTY, MAX_DIFFICULTY_JUMP
+
         if not chain:
             return False
 
@@ -778,6 +1169,53 @@ class Blockchain:
 
             # Ligação correta
             if current.previous_hash != previous.hash:
+                return False
+
+            # ─── Validação de Dificuldade ──────────────────────
+            # Anti-51%: bloco com difficulty abaixo do mínimo
+            # indica ataque de cadeia barata.
+            block_difficulty = current.difficulty
+            if block_difficulty is not None:
+                if block_difficulty < MIN_ACCEPTABLE_DIFFICULTY:
+                    print(f"[ERR] Consenso: bloco #{current.index} difficulty "
+                          f"{block_difficulty} < mínimo {MIN_ACCEPTABLE_DIFFICULTY}")
+                    return False
+
+                # Anti-manipulação: salto de difficulty muito grande
+                # entre blocos consecutivos indica adulteração.
+                # Leitura thread-safe via _difficulty_lock
+                with self._difficulty_lock:
+                    local_difficulty = self.difficulty
+                prev_difficulty = (chain[i-1].difficulty or
+                                   local_difficulty)
+                if abs(block_difficulty - prev_difficulty) > MAX_DIFFICULTY_JUMP:
+                    print(f"[ERR] Consenso: salto de difficulty de "
+                          f"{prev_difficulty} para {block_difficulty}")
+                    return False
+
+            # ─── Validação de Timestamp ────────────────────────
+            if not self._validate_timestamp(current.timestamp):
+                print(f"[ERR] Consenso: timestamp inválido no bloco "
+                      f"#{current.index}")
+                return False
+
+            # ─── Verificação do Proof of Work ──────────────────
+            block_difficulty = current.difficulty or self.difficulty
+            block_dict = {
+                'index': current.index,
+                'timestamp': current.timestamp,
+                'transactions': [
+                    tx.to_dict() if hasattr(tx, 'to_dict') else tx
+                    for tx in current.transactions
+                ],
+                'proof': current.proof,
+                'previous_hash': current.previous_hash,
+                'merkle_root': current.merkle_root
+            }
+            block_hash = CryptoUtils.hash_block(block_dict)
+            if not CryptoUtils.is_hash_valid(block_hash, block_difficulty):
+                print(f"[ERR] Consenso: bloco #{current.index} da cadeia externa "
+                      f"não atende ao PoW (difficulty={block_difficulty})")
                 return False
 
         return True

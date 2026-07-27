@@ -35,7 +35,7 @@ export default function Sidebar({ isOpen, onClose }: Props) {
             K
           </div>
           <div>
-            <h1 className="text-base font-bold text-kur-text tracking-tight">KURAMACHIAN</h1>
+            <h1 className="text-base font-bold text-kur-text tracking-tight">Kurama Chain</h1>
             <p className="text-[10px] text-kur-text-muted -mt-0.5">Blockchain Explorer</p>
           </div>
         </div>
@@ -64,7 +64,7 @@ export default function Sidebar({ isOpen, onClose }: Props) {
 
         {/* Version */}
         <div className="absolute bottom-0 left-0 right-0 p-4 border-t border-kur-border">
-          <p className="text-xs text-kur-text-muted text-center">v1.0.0 — KURAMACHIAN</p>
+          <p className="text-xs text-kur-text-muted text-center">v1.0.0 — Kurama Chain</p>
         </div>
       </aside>
     </>

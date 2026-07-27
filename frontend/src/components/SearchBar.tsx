@@ -98,7 +98,7 @@ export default function SearchBar() {
                   {(transactions as any[]).map((tx: any) => (
                     <ResultItem key={tx.id || tx.transaction_id} onClick={() => handleSelect(`/block/${tx.block_index}`)}>
                       <span className="text-xs font-mono text-kur-text truncate">{tx.id || tx.transaction_id}</span>
-                      <span className="text-xs text-kur-text-muted">{tx.amount} coins</span>
+                      <span className="text-xs text-kur-text-muted">{tx.amount} KUR</span>
                     </ResultItem>
                   ))}
                 </Section>

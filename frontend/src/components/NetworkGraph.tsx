@@ -64,12 +64,12 @@ export default function NetworkGraph({ nodes, loading }: Props) {
   }, []);
 
   const graphNodes: GraphNode[] = nodes.map(n => ({
-    id: n.id,
-    label: n.id.slice(0, 6),
+    id: n.node_id,
+    label: n.node_id.slice(0, 6),
     status: getNodeStatus(n),
     url: n.url,
-    chain_length: n.chain_length,
-    pending_tx: n.pending_tx || 0,
+    chain_length: n.blocks || 0,
+    pending_tx: 0,
     latency_ms: n.latency_ms,
   }));
 
@@ -77,7 +77,7 @@ export default function NetworkGraph({ nodes, loading }: Props) {
   const graphLinks: GraphLink[] = [];
   for (let i = 0; i < nodes.length; i++) {
     for (let j = i + 1; j < nodes.length; j++) {
-      graphLinks.push({ source: nodes[i].id, target: nodes[j].id });
+      graphLinks.push({ source: nodes[i].node_id, target: nodes[j].node_id });
     }
   }
 
@@ -111,9 +111,9 @@ export default function NetworkGraph({ nodes, loading }: Props) {
                 color: getStatusColor(getNodeStatus(nodes[0])),
               }}
             >
-              {nodes[0].id.slice(0, 4)}
+              {nodes[0].node_id.slice(0, 4)}
             </div>
-            <p className="text-kur-text text-sm font-mono">{nodes[0].id.slice(0, 16)}...</p>
+            <p className="text-kur-text text-sm font-mono">{nodes[0].node_id.slice(0, 16)}...</p>
             <p className="text-kur-text-muted text-xs mt-1">Único nó na rede</p>
             <p className="text-kur-text-muted text-xs">Conecte mais nós para formar a rede P2P</p>
           </div>
@@ -143,7 +143,9 @@ export default function NetworkGraph({ nodes, loading }: Props) {
               <span style={{ color: getStatusColor(tooltip.node.status) }}>{getStatusLabel(tooltip.node.status)}</span>
             </p>
             <p><span className="text-kur-text-muted">Blocos:</span> {tooltip.node.chain_length}</p>
-            <p><span className="text-kur-text-muted">Pendentes:</span> {tooltip.node.pending_tx}</p>
+            {tooltip.node.pending_tx > 0 && (
+              <p><span className="text-kur-text-muted">Pendentes:</span> {tooltip.node.pending_tx}</p>
+            )}
             <p><span className="text-kur-text-muted">Latência:</span> {tooltip.node.latency_ms ?? 'N/A'}ms</p>
           </div>
         </div>

@@ -14,9 +14,11 @@ export interface Transaction {
   sender: string;
   receiver: string;
   amount: number;
+  fee: number;
   timestamp: number;
   signature: string | null;
   sender_address: string | null;
+  nonce?: string;
 }
 
 export interface WalletInfo {
@@ -26,16 +28,20 @@ export interface WalletInfo {
 }
 
 export interface Stats {
-  total_blocks: number;
+  blocks: number;
   total_transactions: number;
-  total_nodes: number;
-  active_nodes: number;
   pending_transactions: number;
   difficulty: number;
   reward: number;
-  block_time: number;
   node_id: string;
-  chain_size: number;
+  peer_nodes: string[];
+  chain_valid: boolean;
+  total_supply: number;
+  supply_cap: number;
+  remaining_supply: number;
+  percent_mined: number;
+  token_name: string;
+  token_symbol: string;
 }
 
 export interface MempoolStats {
@@ -45,6 +51,7 @@ export interface MempoolStats {
   avg_value: number;
   oldest_tx: number;
   coinbase_count: number;
+  total_fees: number;
   transactions: Transaction[];
 }
 
@@ -57,14 +64,19 @@ export interface ChartDataPoint {
 }
 
 export interface NodeInfo {
-  id: string;
+  node_id: string;
   url: string;
   active: boolean;
-  chain_length: number;
-  pending_tx?: number;
-  last_seen: number;
+  blocks: number;
   latency_ms: number | null;
+  is_self?: boolean;
   difficulty?: number;
+}
+
+export interface NodesResponse {
+  nodes: NodeInfo[];
+  total: number;
+  active: number;
 }
 
 export interface SearchResultBlock {
@@ -123,14 +135,33 @@ export interface HealthResponse {
 export interface MineResponse {
   message: string;
   block: Block;
-  proof: number;
+  base_reward: number;
+  fee_reward: number;
+  total_reward: number;
+  miner_address: string;
+  miner_balance?: number;
+  difficulty: number;
+  supply: SupplyResponse;
+}
+
+export interface SupplyResponse {
+  token_name: string;
+  token_symbol: string;
+  total_supply: number;
+  supply_cap: number;
+  remaining_supply: number;
+  percent_mined: number;
+  blocks_mined: number;
+  initial_reward?: number;
+  current_block_reward?: number;
+  halving_interval?: number;
 }
 
 export interface BalanceResponse {
   address: string;
   balance: number;
-  pending_received: number;
-  pending_sent: number;
+  transactions_count: number;
+  transactions: Transaction[];
 }
 
 // Type aliases for backward compatibility

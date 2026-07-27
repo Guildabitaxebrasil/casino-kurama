@@ -35,6 +35,7 @@ export default function TransactionTable({ transactions, loading }: Props) {
             <th className="text-left py-3 px-4 font-medium">Remetente</th>
             <th className="text-left py-3 px-4 font-medium">Destinatário</th>
             <th className="text-right py-3 px-4 font-medium">Valor</th>
+            <th className="text-right py-3 px-4 font-medium">Taxa</th>
             <th className="text-right py-3 px-4 font-medium">Data</th>
           </tr>
         </thead>
