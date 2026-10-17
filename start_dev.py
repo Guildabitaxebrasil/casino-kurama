@@ -1,15 +1,12 @@
 #!/usr/bin/env python3
 """
-Script de inicializacao do servidor de desenvolvimento.
-Inicia o servidor Flask com todos os blueprints registrados,
-incluindo o blueprint de producao (/api/v2/casino/owner/*).
+Script de inicializacao do servidor de desenvolvimento da blockchain.
+Inicia o servidor Flask da blockchain KuramaChain.
 
 Uso:
     python start_dev.py [--port PORT]
 
 O servidor inicia em http://localhost:5000
-O frontend Vite deve ser iniciado separadamente:
-    cd casino/frontend && npm run dev
 """
 import sys
 import os
@@ -42,32 +39,6 @@ def main():
         port=args.port
     )
 
-    # ─── Registra Blueprint do Cassino ──────────────────────
-    print("[CASINO] Registrando blueprint do cassino...")
-    try:
-        from casino.backend.routes import create_casino_blueprint
-        casino_bp = create_casino_blueprint(blockchain=blockchain)
-        app.register_blueprint(casino_bp)
-        print("   [OK] /api/casino/*")
-    except Exception as e:
-        print(f"   [WARN] {e}")
-
-    # ─── Registra Blueprint de Producao ─────────────────────
-    print("[PRODUCTION] Registrando blueprint de producao...")
-    try:
-        from casino.backend.infrastructure.routes import create_production_blueprint
-        from casino.backend.infrastructure.deposit_manager_production import ProductionDepositManager
-        prod_manager = ProductionDepositManager()
-        prod_bp = create_production_blueprint(prod_manager)
-        app.register_blueprint(prod_bp)
-        app.prod_manager = prod_manager
-        print("   [OK] /api/v2/casino/owner/*")
-        print("   [OK] GET /api/v2/casino/owner/challenge")
-        print("   [OK] GET /api/v2/casino/owner/profit (requer auth)")
-        print("   [OK] POST /api/v2/casino/owner/withdraw-profit (requer auth)")
-    except Exception as e:
-        print(f"   [WARN] Erro ao registrar blueprint de producao: {e}")
-
     # ─── Lightning Network ──────────────────────────────────
     try:
         from lightning.api import create_lightning_blueprint
@@ -84,6 +55,19 @@ def main():
     except Exception as e:
         print(f"   [WARN] Lightning: {e}")
 
+    # ─── EVM (Contratos Inteligentes / DeFi) ────────────────
+    try:
+        from evm.engine import EVMEngine
+        from evm.rpc import create_evm_blueprint
+        from config import EVM_AUTO_MINE, EVM_CHAIN_ID
+        evm_engine = EVMEngine(auto_mine=EVM_AUTO_MINE)
+        app.register_blueprint(create_evm_blueprint(evm_engine))
+        app.evm_engine = evm_engine
+        blockchain.on('on_block_mined', evm_engine.on_pow_block)
+        print(f"[EVM] /rpc (chain_id={EVM_CHAIN_ID}, auto_mine={EVM_AUTO_MINE})")
+    except Exception as e:
+        print(f"   [WARN] EVM: {e}")
+
     print(f"\n[START] Servidor rodando em http://localhost:{args.port}")
     print(f"\n[ENDPOINTS]")
     print(f"   GET  /chain                          - Blockchain completa")
@@ -91,12 +75,8 @@ def main():
     print(f"   POST /transactions/new                - Nova transacao")
     print(f"   POST /wallet/new                      - Nova carteira")
     print(f"   GET  /balance/<address>               - Saldo")
-    print(f"   GET  /api/casino/*                    - Cassino (jogos)")
-    print(f"   GET  /api/v2/casino/owner/challenge   - Obter challenge")
-    print(f"   GET  /api/v2/casino/owner/profit      - Ver lucro")
-    print(f"   POST /api/v2/casino/owner/withdraw-profit - Sacar lucro")
     print(f"   GET  /api/lightning/*                 - Lightning Network")
-    print(f"\n[TIP] Frontend: cd casino/frontend && npm run dev")
+    print(f"   POST /rpc                             - JSON-RPC EVM (eth_*, DeFi)")
 
     # Error handler
     @app.errorhandler(500)

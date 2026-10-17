@@ -54,6 +54,15 @@ def _env(key: str, default):
             return default
     return val
 
+
+def _env_list(key: str, default):
+    """Helper: lê uma lista separada por vírgula (ex.: chaves/validadores)."""
+    val = os.environ.get(key)
+    if not val:
+        return default
+    items = [item.strip() for item in val.split(',') if item.strip()]
+    return items or default
+
 # ─── Token ───────────────────────────────────────────────────────
 TOKEN_NAME = _env('TOKEN_NAME', 'Kurama')
 TOKEN_SYMBOL = _env('TOKEN_SYMBOL', 'KUR')
@@ -93,7 +102,6 @@ CORS_ORIGINS = [               # Origens permitidas para CORS
     'http://127.0.0.1:5173',
     'http://localhost:5174',
     # Render - adicionar URLs após o deploy
-    # Ex: 'https://kurama-casino.onrender.com',
 ]
 
 # ─── SSL / HTTPS ─────────────────────────────────────────────────
@@ -186,3 +194,82 @@ LN_SETTLEMENT_PREFIX = 'ln_settlement:' # Prefixo para tx de settlement
 # ─── Sincronização P2P ───────────────────────────────────────────
 SYNC_INTERVAL = 5.0            # Intervalo entre sincronizações (s)
 NODE_HEALTH_TIMEOUT = 1.0      # Timeout para health check (s)
+
+# ─── EVM (Contratos Inteligentes / DeFi) ─────────────────────────
+# Camada de execução EVM integrada à blockchain (ver evm/engine.py).
+# Fork London = último fork com Proof of Work.
+EVM_CHAIN_ID = _env('EVM_CHAIN_ID', 9090)
+EVM_GAS_LIMIT = _env('EVM_GAS_LIMIT', 30_000_000)          # gas por bloco
+EVM_DEFAULT_GAS = _env('EVM_DEFAULT_GAS', 3_000_000)       # gas por transação
+EVM_DEFAULT_GAS_PRICE = _env('EVM_DEFAULT_GAS_PRICE', 10**9)  # 1 gwei
+EVM_GENESIS_BALANCE_ETH = _env('EVM_GENESIS_BALANCE_ETH', 10_000.0)
+# Chave privada de desenvolvimento (APENAS demo/testes). Em produção, use
+# um cofre/KMS e NUNCA comite a chave real.
+EVM_DEV_PRIVATE_KEY = _env('EVM_DEV_PRIVATE_KEY', '0x' + '11' * 32)
+# Contas financiadas no gênese: {endereço_0x: saldo_em_ETH}. A conta de dev
+# (EVM_DEV_PRIVATE_KEY) é adicionada automaticamente pela engine.
+EVM_GENESIS_ACCOUNTS = {}
+# Se True, cada transação EVM sela um bloco na hora (modo dev, estilo Ganache).
+# Se False, as transações EVM só são seladas quando a KuramaChain minera um
+# bloco PoW (integração via evento on_block_mined).
+EVM_AUTO_MINE = _env('EVM_AUTO_MINE', True)
+
+# ─── Oráculo (Fase 3) ────────────────────────────────────────────
+# Nó oráculo: publica preços off-chain no feed on-chain (ver evm/oracle_node.py).
+# Chave privada de um reporter (APENAS demo/testes — use KMS/cofre em produção).
+EVM_ORACLE_PRIVATE_KEY = _env('EVM_ORACLE_PRIVATE_KEY', '0x' + '33' * 32)
+# Nº mínimo de reporters que precisam concordar para fechar uma rodada.
+EVM_ORACLE_QUORUM = _env('EVM_ORACLE_QUORUM', 1)
+# Idade máxima (s) do preço do feed antes do consumidor cair no fallback TWAP.
+EVM_ORACLE_MAX_AGE = _env('EVM_ORACLE_MAX_AGE', 3600)
+# Janela mínima (s) entre duas atualizações da TWAP da DEX.
+EVM_ORACLE_PERIOD = _env('EVM_ORACLE_PERIOD', 300)
+# Intervalo (s) entre publicações do nó oráculo.
+EVM_ORACLE_INTERVAL = _env('EVM_ORACLE_INTERVAL', 60)
+# Desvio máximo (%) aceito em relação ao último preço on-chain (proteção
+# contra "fat finger"). Desative com None/0.
+EVM_ORACLE_MAX_DEVIATION_PCT = _env('EVM_ORACLE_MAX_DEVIATION_PCT', 20)
+
+# ─── Lending (Fase 4) ────────────────────────────────────────────
+# Mercado de empréstimos (ver evm/contracts/KurLendingPool.sol e evm/deploy.py).
+# LTV inicial de uma reserva (bps): quanto do colateral pode ser emprestado.
+EVM_LENDING_LTV_BPS = _env('EVM_LENDING_LTV_BPS', 7500)
+# Limiar de liquidação (bps): acima da dívida/colateral a posição é liquidável.
+EVM_LENDING_LIQ_THRESHOLD_BPS = _env('EVM_LENDING_LIQ_THRESHOLD_BPS', 8000)
+# Bônus do liquidante (bps; 10500 = 5% sobre a dívida coberta).
+EVM_LENDING_LIQ_BONUS_BPS = _env('EVM_LENDING_LIQ_BONUS_BPS', 10500)
+# Fração máxima da dívida liquidável numa chamada (bps).
+EVM_LENDING_CLOSE_FACTOR_BPS = _env('EVM_LENDING_CLOSE_FACTOR_BPS', 5000)
+# Parte dos juros que fica com o protocolo (bps).
+EVM_LENDING_RESERVE_FACTOR_BPS = _env('EVM_LENDING_RESERVE_FACTOR_BPS', 1000)
+# Modelo de juros (APR em %): base + inclinação 1/2 conforme a utilização.
+EVM_LENDING_BASE_RATE_APR = _env('EVM_LENDING_BASE_RATE_APR', 0.0)
+EVM_LENDING_SLOPE1_APR = _env('EVM_LENDING_SLOPE1_APR', 4.0)
+EVM_LENDING_SLOPE2_APR = _env('EVM_LENDING_SLOPE2_APR', 75.0)
+# Utilização ótima (%): até aqui vale a inclinação 1, acima a inclinação 2.
+EVM_LENDING_OPTIMAL_UTILIZATION_PCT = _env('EVM_LENDING_OPTIMAL_UTILIZATION_PCT', 80.0)
+# Idade máxima (s) do preço usado pelo pool (0 = sem checagem).
+EVM_LENDING_PRICE_MAX_AGE = _env('EVM_LENDING_PRICE_MAX_AGE', 3600)
+# Chave usada para implantar/configurar o mercado (APENAS demo/testes).
+EVM_LENDING_PRIVATE_KEY = _env('EVM_LENDING_PRIVATE_KEY', '0x' + '44' * 32)
+
+# ─── Staking (Fase 5) ────────────────────────────────────────────
+# Pools de staking/farming (ver evm/contracts/KurStaking.sol e evm/deploy.py).
+# Chave que implanta/configura os pools (APENAS demo/testes).
+EVM_STAKING_PRIVATE_KEY = _env('EVM_STAKING_PRIVATE_KEY', '0x' + '55' * 32)
+
+# ─── Bridge / Interoperabilidade (Fase 5) ────────────────────────
+# Bridge lock/mint com validadores m-de-n (ver evm/contracts/KurBridge.sol).
+# Chave que implanta/configura o bridge (APENAS demo/testes).
+EVM_BRIDGE_PRIVATE_KEY = _env('EVM_BRIDGE_PRIVATE_KEY', '0x' + '66' * 32)
+# Chaves dos validadores que atestam depósitos (separadas por vírgula).
+# APENAS demo/testes — em produção use chaves em KMS/HSM.
+EVM_BRIDGE_VALIDATOR_KEYS = _env_list('EVM_BRIDGE_VALIDATOR_KEYS', [
+    '0x' + '77' * 32, '0x' + '88' * 32, '0x' + '99' * 32,
+])
+# Nº mínimo de assinaturas de validadores distintos para liberar um saque.
+EVM_BRIDGE_THRESHOLD = _env('EVM_BRIDGE_THRESHOLD', 2)
+
+# ─── JSON-RPC (dApps / MetaMask) ─────────────────────────────────
+# Origem permitida no CORS do endpoint POST /rpc ('*' em dev).
+EVM_RPC_CORS_ORIGIN = _env('EVM_RPC_CORS_ORIGIN', '*')

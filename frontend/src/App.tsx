@@ -6,6 +6,7 @@ import BlockDetails from './pages/BlockDetails';
 import Transactions from './pages/Transactions';
 import Network from './pages/Network';
 import Wallet from './pages/Wallet';
+import DeFi from './pages/DeFi';
 
 export default function App() {
   return (
@@ -17,6 +18,7 @@ export default function App() {
         <Route path="/transactions" element={<Transactions />} />
         <Route path="/network" element={<Network />} />
         <Route path="/wallet" element={<Wallet />} />
+        <Route path="/defi" element={<DeFi />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Layout>

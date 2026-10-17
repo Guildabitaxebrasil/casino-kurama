@@ -6,6 +6,7 @@ const navItems = [
   { to: '/transactions', label: 'Transactions', icon: '💳' },
   { to: '/network', label: 'Network', icon: '🌐' },
   { to: '/wallet', label: 'Wallet', icon: '👛' },
+  { to: '/defi', label: 'DeFi', icon: '🏦' },
 ];
 
 interface Props {

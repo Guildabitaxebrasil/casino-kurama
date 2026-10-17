@@ -33,36 +33,6 @@ app = create_app(
     port=int(os.environ.get('PORT', 5000))
 )
 
-# ─── Registra Blueprint do Cassino ───────────────────────────────
-try:
-    from casino.backend.routes import create_casino_blueprint
-    casino_bp = create_casino_blueprint(blockchain=blockchain)
-    app.register_blueprint(casino_bp)
-    print("[CASINO] Blueprint registrado em /api/casino/*")
-except Exception as e:
-    print(f"[WARN] Cassino: {e}")
-
-# ─── Registra Blueprint de Produção (Polygon + Lucro) ───────────
-prod_manager = None
-try:
-    from casino.backend.infrastructure.routes import create_production_blueprint
-    from casino.backend.infrastructure.deposit_manager_production import ProductionDepositManager
-    prod_manager = ProductionDepositManager()
-    prod_bp = create_production_blueprint(prod_manager)
-    app.register_blueprint(prod_bp)
-    app.prod_manager = prod_manager
-    print("[PRODUCTION] Blueprint de produção registrado em /api/v2/casino/*")
-except Exception as e:
-    print(f"[WARN] Blueprint de produção: {e}")
-
-# Inicializa ProductionDepositManager
-if prod_manager:
-    try:
-        prod_manager.initialize()
-        print("[PRODUCTION] ProductionDepositManager inicializado!")
-    except Exception as e:
-        print(f"[WARN] ProductionDepositManager: {e}")
-
 # ─── Registra Blueprint da Lightning Network ─────────────────────
 try:
     from lightning.api import create_lightning_blueprint
@@ -79,13 +49,18 @@ try:
 except Exception as e:
     print(f"[WARN] Lightning: {e}")
 
-# ─── Registra Blueprint Polygon ──────────────────────────────────
+# ─── Registra EVM (Contratos Inteligentes / DeFi) ────────────────
 try:
-    from api.polygon_routes import polygon_bp
-    app.register_blueprint(polygon_bp)
-    print("[POLYGON] Blueprint do Polygon registrado")
+    from evm.engine import EVMEngine
+    from evm.rpc import create_evm_blueprint
+    from config import EVM_AUTO_MINE, EVM_CHAIN_ID
+    evm_engine = EVMEngine(auto_mine=EVM_AUTO_MINE)
+    app.register_blueprint(create_evm_blueprint(evm_engine))
+    app.evm_engine = evm_engine
+    blockchain.on('on_block_mined', evm_engine.on_pow_block)
+    print(f"[EVM] JSON-RPC eth_* registrado em /rpc (chain_id={EVM_CHAIN_ID})")
 except Exception as e:
-    print(f"[WARN] Polygon: {e}")
+    print(f"[WARN] EVM: {e}")
 
 # ─── Error handler ───────────────────────────────────────────────
 @app.errorhandler(500)

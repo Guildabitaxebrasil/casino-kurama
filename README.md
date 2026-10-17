@@ -4,13 +4,12 @@
   <img src="https://img.shields.io/badge/TypeScript-5-3178C6?style=for-the-badge&logo=typescript&logoColor=white" alt="TypeScript">
   <img src="https://img.shields.io/badge/Flask-2.0-000000?style=for-the-badge&logo=flask&logoColor=white" alt="Flask">
   <img src="https://img.shields.io/badge/Tailwind_CSS-3-38B2AC?style=for-the-badge&logo=tailwind-css&logoColor=white" alt="Tailwind CSS">
-  <img src="https://img.shields.io/badge/Polygon-8247E5?style=for-the-badge&logo=polygon&logoColor=white" alt="Polygon">
   <img src="https://img.shields.io/badge/license-MIT-green?style=for-the-badge" alt="License">
 </p>
 
 <h1 align="center">⛓️ KuramaChain</h1>
-<p align="center"><strong>Blockchain + Casino Descentralizado + Lightning Network</strong></p>
-<p align="center">Uma implementação completa de blockchain com Proof of Work, carteiras ECDSA,<br>explorador visual, cassino integrado com USDT na Polygon e rede Lightning.</p>
+<p align="center"><strong>Blockchain + Lightning Network</strong></p>
+<p align="center">Uma implementação completa de blockchain com Proof of Work, carteiras ECDSA,<br>explorador visual e rede Lightning.</p>
 
 <br>
 
@@ -19,7 +18,6 @@
   <a href="#-arquitetura">Arquitetura</a> •
   <a href="#-quick-start">Quick Start</a> •
   <a href="#-blockchain">Blockchain</a> •
-  <a href="#-casino">Cassino</a> •
   <a href="#%EF%B8%8F-lightning-network">Lightning</a> •
   <a href="#-api-endpoints">API</a> •
   <a href="#-segurança">Segurança</a>
@@ -29,13 +27,16 @@
 
 ## 🎯 Visão Geral
 
-O **KuramaChain** é um ecossistema blockchain completo que combina três grandes módulos:
+O **KuramaChain** é uma blockchain própria escrita em Python com dois grandes módulos:
 
 | Módulo | Descrição | Stack |
 |--------|-----------|-------|
 | ⛓️ **Blockchain Core** | Blockchain PoW com ECDSA, Merkle Tree, consenso, carteiras e explorer visual | Python, Flask, React |
-| 🎰 **Kurama Casino** | Cassino descentralizado com depósitos em USDT (Polygon) | Python, React, Web3 |
 | ⚡ **Lightning Network** | Canais de pagamento off-chain para transações instantâneas | Python, Flask |
+| 🔷 **EVM / DeFi** | Smart contracts Solidity (ERC-20, DEX, oráculo, lending, staking, bridge) e JSON-RPC `eth_*` | Python, Solidity, py-evm |
+
+> **Nota:** o cassino (Kurama Casino) **não faz mais parte deste projeto**. Foi
+> extraído para um projeto separado e este repositório contém apenas a blockchain.
 
 ---
 
@@ -44,22 +45,21 @@ O **KuramaChain** é um ecossistema blockchain completo que combina três grande
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                      KURAMACHAIN                            │
-├─────────────────┬───────────────────┬──────────────────────┤
-│   Blockchain    │     Casino        │   Lightning Network  │
-│   Core          │                   │                      │
-├─────────────────┼───────────────────┼──────────────────────┤
-│ • Proof of Work │ • Roleta          │ • Canais bidirecionais│
-│ • ECDSA/Wallets │ • Blackjack       │ • HTLCs              │
-│ • Merkle Tree   │ • Slots           │ • Multi-hop routing  │
-│ • Consenso P2P  │ • Dados           │ • Disputas on-chain  │
-│ • Mempool/SSE   │ • USDT/Polygon    │ • Fee management     │
-└─────────────────┴───────────────────┴──────────────────────┘
-         ▲                    ▲                    ▲
-         │                    │                    │
-    ┌────┴────┐         ┌────┴────┐          ┌────┴────┐
-    │  Flask  │         │  React  │          │  React  │
-    │  (API)  │         │(Frontend)│          │(Frontend)│
-    └─────────┘         └─────────┘          └─────────┘
+├────────────────────────────┬────────────────────────────────┤
+│   Blockchain Core          │   Lightning Network            │
+├────────────────────────────┼────────────────────────────────┤
+│ • Proof of Work            │ • Canais bidirecionais         │
+│ • ECDSA/Wallets            │ • HTLCs                        │
+│ • Merkle Tree              │ • Multi-hop routing            │
+│ • Consenso P2P             │ • Disputas on-chain            │
+│ • Mempool/SSE              │ • Fee management               │
+└────────────────────────────┴────────────────────────────────┘
+         ▲                              ▲
+         │                              │
+    ┌────┴────┐                    ┌────┴────┐
+    │  Flask  │                    │  React  │
+    │  (API)  │                    │(Frontend)│
+    └─────────┘                    └─────────┘
 ```
 
 ---
@@ -72,7 +72,7 @@ O **KuramaChain** é um ecossistema blockchain completo que combina três grande
 # 1. Instalar dependências
 pip install -r requirements.txt
 
-# 2. Iniciar servidor com blockchain + cassino + lightning
+# 2. Iniciar servidor da blockchain + lightning
 python run.py --port 5000
 
 # 3. Rede multi-nó (3 nós simultâneos)
@@ -89,15 +89,6 @@ cd frontend
 npm install
 npm run dev
 # Acesse http://localhost:5173
-```
-
-### Frontend (Cassino)
-
-```bash
-cd casino/frontend
-npm install
-npm run dev
-# Acesse http://localhost:5173/casino
 ```
 
 ---
@@ -151,51 +142,6 @@ O frontend em React oferece 6 páginas para explorar a blockchain:
 
 ---
 
-## 🎰 Cassino
-
-### Jogos Disponíveis
-
-| Jogo | Descrição | Payout Máximo |
-|------|-----------|---------------|
-| 🎡 **Roleta Europeia** | Aposte em números (até 35x), cores (2x), dúzias (3x) | 35:1 |
-| 🃏 **Blackjack 21** | Vença o dealer chegando perto de 21 sem estourar | 3:2 |
-| 🎰 **Caça-níqueis** | Slots com tema crypto (BTC, ETH, USDT, SOL) | 100x |
-| 🎲 **Dados** | Over/Under 7, Dupla, Par/Ímpar, Soma exata | 30x |
-
-### 💰 Depósitos e Saques
-
-O cassino aceita **apenas USDT (ERC-20)** na rede Polygon:
-
-```
-Depósito: 1 USDT → 1 Ficha do Cassino  (mín. 5 USDT)
-  Saque:  1 Ficha → 1 USDT
-```
-
-### 🔒 Provably Fair
-
-Todo resultado de jogo é verificável:
-1. Server seed é gerado e seu **hash** é mostrado **antes** da rodada
-2. Após a rodada, o server seed é revelado
-3. Use `HMAC-SHA256(server_seed, client_seed:nonce)` para verificar
-
-### 🏆 Sistema de Progressão
-
-- **Bônus Diário** — 5 fichas grátis todo dia
-- **Cashback Semanal** — 10% das perdas de volta
-- **Conquistas** — 18 achievements para desbloquear
-- **Leaderboard** — Ranking global de jogadores
-
-### 🔐 Segurança do Cassino
-
-- **2FA (TOTP)** para saques acima do limite
-- **AES-256-GCM** para chaves privadas em repouso
-- **Hot/Warm/Cold Wallets** com sweeps automáticos
-- **Audit Trail** imutável com hash chain (SHA3-256)
-- **Rate Limiting** multi-camada (IP + wallet)
-- **Monitoramento on-chain** da Polygon
-
----
-
 ## ⚡ Lightning Network
 
 Implementação de **Lightning Network** para pagamentos off-chain:
@@ -212,6 +158,133 @@ POST /api/lightning/channel/open    # Abrir canal
 POST /api/lightning/invoice         # Criar invoice
 POST /api/lightning/pay             # Pagar invoice via rede
 ```
+
+---
+
+## 🔷 Camada EVM & DeFi
+
+A blockchain roda uma **EVM (fork London)** integrada ao PoW: cada bloco minerado
+sela um bloco EVM. Contratos Solidity são compilados com `solc` (`py-solc-x`) e
+expostos por **JSON-RPC `eth_*`** em `POST /rpc` — o mesmo protocolo que
+MetaMask, ethers.js e web3.js falam.
+
+| Fase | Entregável | Contratos | Testes |
+|------|-----------|-----------|--------|
+| 0 | EVM + JSON-RPC `eth_*` | — | `tests/test_evm.py` |
+| 1 | Token **ERC-20** | `KurToken.sol` | `tests/test_evm.py` |
+| 2 | **DEX** (AMM `x*y=k`) + pools de liquidez (LP tokens) | `KurFactory.sol`, `KurPair.sol`, `KurRouter.sol` | `tests/test_dex.py` |
+| 3 | **Oráculo** (feed Chainlink + TWAP de fallback) | `KurPriceFeed.sol`, `KurOracle.sol` | `tests/test_oracle.py` |
+| 4 | **Lending** (Aave V2: depósito, empréstimo e liquidação por oráculo) | `KurLendingPool.sol`, `KurScaledToken.sol`, `KurPriceOracle.sol` | `tests/test_lending.py` |
+| 5 | **Staking/Farming** (pools com recompensa por segundo) | `KurStaking.sol` | `tests/test_staking.py` |
+| 5 | **Bridge** lock/mint com validadores m-de-n + relayer | `KurBridge.sol`, `KurWrappedToken.sol`, `evm/bridge.py` | `tests/test_bridge.py` |
+| 6 | **Wallets/dApps** (JSON-RPC completo + card MetaMask + swap pela carteira) | `evm/rpc.py`, `frontend/src/api/metamask.ts`, `evmAbi.ts`, `dex.ts` | `tests/test_rpc_evm.py` |
+
+### Swap assinado pela carteira
+
+A aba **DeFi → Swap** executa o swap do DEX com a wallet (MetaMask/EIP-1193),
+sem ethers.js/web3.js no bundle:
+
+1. informe o endereço do **`KurRouter`** (ou defina `VITE_KUR_ROUTER` na build);
+2. o par é descoberto on-chain (`router.factory()` → `getPair(tokenIn, tokenOut)`) —
+   **qualquer par ERC-20** do `KurFactory` funciona, nos dois sentidos;
+3. a cotação usa a fórmula do contrato (`x*y=k`, taxa 0,3%) e o slippage em bps;
+4. se faltar allowance, a wallet assina `approve` e depois
+   `swapExactTokensForTokens(amountIn, amountOutMin, [in, out], conta)`;
+5. o valor recebido é lido do evento `SwapExecuted` no recibo.
+
+A chave privada nunca sai da wallet. `eth_estimateGas` estima com o `from` real
+(`evm/engine.py`) — um swap gasta ~134k, então o gas limit acompanha a transação.
+
+### Oráculo
+
+- **`KurPriceFeed`** é compatível com `AggregatorV3Interface` (Chainlink): nós
+  oráculo autorizados enviam o preço e a rodada fecha com a **mediana** quando o
+  **quórum** de reporters é atingido — um reporter desonesto não move o preço.
+- **`KurOracle`** lê o feed e, se ele estiver **obsoleto**, cai no **fallback
+  TWAP** do par AMM (`KurPair` acumula preço × tempo em UQ112x112).
+- **Nó oráculo Python** (`evm/oracle_node.py`) publica o preço off-chain no feed
+  com guarda de desvio (anti "fat finger"):
+
+```python
+from evm.deploy import deploy_price_feed
+from evm.engine import EVMEngine
+from evm.oracle_node import KurOracleNode, RandomWalkSource
+
+engine = EVMEngine()
+_, feed = deploy_price_feed(engine)   # aplica os defaults EVM_ORACLE_*
+
+node = KurOracleNode(engine=engine, feed=feed, source=RandomWalkSource(2500.0))
+node.publish_once()      # publica uma vez
+node.run(interval=60)    # loop contínuo
+```
+
+### Lending (mercado de empréstimos)
+
+- **`KurLendingPool`** (fork do Aave V2): deposita e recebe **aToken** (colateral
+  que rende juros), toma emprestado a **taxa variável** (vira **debtToken**) e
+  **liquida** posições subcolateralizadas quando o `healthFactor` cai abaixo de
+  1. A taxa segue a utilização: `base + slope1·u/ótima` e, acima da utilização
+  ótima, `+ slope2`.
+- **`KurPriceOracle`** liga cada ativo ao seu **feed AggregatorV3** (Fase 3) e
+  normaliza o preço em 18 decimais; preço **obsoleto reverte** (nunca se calcula
+  colateral com preço velho).
+- **Liquidação por oráculo**: quem liquidar paga parte da dívida (limitada pelo
+  `closeFactor`) e recebe o colateral equivalente **mais o bônus** (`liquidationBonus`).
+
+```python
+from evm.deploy import deploy_lending_pool, deploy_price_oracle, init_reserve
+
+_, prices = deploy_price_oracle(engine)            # idades/taxas do config
+_, pool = deploy_lending_pool(engine, prices)
+_, (aToken, debtToken) = init_reserve(engine, pool, token)   # LTV/limiar/bônus do config
+
+# depois, via pool: deposit / withdraw / borrow / repay / liquidationCall
+# e getUserAccountData(address) → (colateral, dívida, disponível, limiar, ltv, healthFactor)
+```
+
+### Staking (pools de recompensa)
+
+- **`KurStaking`** é um farm multi-pool (modelo `accRewardPerShare`): cada pool
+  aceita um token (KUR, LP token do DEX) e paga recompensa por segundo em outro
+  token. Stake KUR → ganha KUR é suportado.
+- As recompensas saem de um **orçamento** (`fundPool`), nunca do principal: sem
+  orçamento o `claim` reverte, mas o `withdraw` do principal continua funcionando
+  (e há `emergencyWithdraw`).
+
+```python
+from evm.deploy import create_staking_pool, deploy_staking, fund_staking_pool, stake_tokens
+
+_, staking = deploy_staking(engine)
+_, pid = create_staking_pool(engine, staking, kur, kur, rate, reward_end)
+fund_staking_pool(engine, staking, pid, 1_000 * 10**18)   # abastece o orçamento
+stake_tokens(engine, staking, pid, 100 * 10**18)           # stake/claim/unstake
+```
+
+### Bridge (interoperabilidade)
+
+- **`KurBridge`** conecta a KuramaChain a outras redes no modelo **lock/mint**:
+  o ativo é travado na origem (`deposit`) e o **`KurWrappedToken`** é cunhado no
+  destino; na volta o wrapped é **queimado** e o ativo travado é liberado.
+- O saque exige **`threshold` assinaturas** de validadores distintos sobre o
+  digest EIP-191 do depósito — `depositId` não pode ser processado duas vezes e
+  a mensagem amarra as duas chains, o bridge, o destinatário e o valor.
+- **`evm/bridge.py`** traz o digest/assinatura e um **relayer** que lê os eventos
+  `Deposit` e envia o `withdraw` no destino.
+
+```python
+from evm.bridge import BridgeRelayer
+from evm.deploy import deploy_bridge, deploy_wrapped_token, register_wrapped
+
+_, bridge = deploy_bridge(engine)                        # validadores/threshold do config
+_, wrapped = deploy_wrapped_token(engine, 'Wrapped KUR', 'wKUR', bridge)
+register_wrapped(engine, bridge, 9090, kur, wrapped)     # (chain remota, token) → wrapped
+
+relayer = BridgeRelayer(source_engine, dest_engine, bridge_a, bridge_b, validator_keys)
+relayer.process()                                        # origem → destino
+```
+
+> A arquitetura completa (fases, decisões e riscos) está em
+> [`DEFI_ARCHITECTURE.md`](DEFI_ARCHITECTURE.md).
 
 ---
 
@@ -233,21 +306,20 @@ POST /api/lightning/pay             # Pagar invoice via rede
 | `GET` | `/stats` | Estatísticas |
 | `GET` | `/api/events` | Eventos em tempo real (SSE) |
 | `GET` | `/api/docs` | Documentação Swagger |
+| `POST` | `/rpc` | JSON-RPC `eth_*` da EVM (MetaMask / ethers.js / web3.js) |
 
-### Cassino
+### EVM JSON-RPC (`POST /rpc`)
 
-| Método | Rota | Descrição |
-|--------|------|-----------|
-| `GET` | `/api/casino/balance/<player>` | Saldo do jogador |
-| `POST` | `/api/casino/deposit` | Depositar USDT |
-| `POST` | `/api/casino/withdraw` | Sacar para USDT |
-| `POST` | `/api/casino/roulette/play` | Jogar roleta |
-| `POST` | `/api/casino/blackjack/start` | Iniciar blackjack |
-| `POST` | `/api/casino/slots/play` | Jogar slots |
-| `POST` | `/api/casino/dice/play` | Jogar dados |
-| `GET` | `/api/casino/leaderboard` | Ranking |
-| `GET` | `/api/casino/bonuses` | Bônus disponíveis |
-| `GET` | `/api/casino/achievements` | Conquistas |
+| Método | Para quê |
+|--------|----------|
+| `eth_chainId`, `net_version`, `web3_clientVersion` | identificar a rede (chain ID **9090**) |
+| `eth_blockNumber`, `eth_gasPrice`, `eth_feeHistory` | estado/gas para a wallet |
+| `eth_getBalance`, `eth_getTransactionCount`, `eth_getCode`, `eth_getStorageAt` | estado de contas/contratos |
+| `eth_call`, `eth_estimateGas` | leitura/execução simulada |
+| `eth_sendRawTransaction` | transação assinada pela wallet |
+| `eth_getTransactionReceipt` (com **logs**), `eth_getTransactionByHash` | recibo/histórico |
+| `eth_getBlockByNumber`, `eth_getBlockByHash`, `eth_getBlockTransactionCountBy*` | blocos |
+| `eth_getLogs` | eventos (filtro de endereço/topics) |
 
 ### Lightning Network
 
@@ -284,16 +356,6 @@ POST /api/lightning/pay             # Pagar invoice via rede
 - **Peer Scoring** — banimento progressivo de peers maliciosos
 - **Content-Security-Policy** — headers restritivos no frontend
 
-### Produção
-
-- **PostgreSQL** para persistência de saldos
-- **AES-256-GCM** para chaves privadas em repouso
-- **Hot/Warm/Cold Wallets** com hierarquia de segurança
-- **2FA (TOTP)** para saques
-- **Audit Trail** imutável com hash chain
-- **Sweeps Automáticos** entre wallets
-- **Monitoramento on-chain** da Polygon
-
 ---
 
 ## 📁 Estrutura do Projeto
@@ -302,7 +364,6 @@ POST /api/lightning/pay             # Pagar invoice via rede
 kuramachain/
 ├── api/                           # API REST (Flask)
 │   ├── routes.py                  # Endpoints principais
-│   ├── polygon_routes.py          # Endpoints Polygon
 │   └── __init__.py
 ├── core/                          # Blockchain Core
 │   ├── blockchain.py              # Blockchain, consenso, eventos
@@ -312,18 +373,6 @@ kuramachain/
 │   ├── crypto_utils.py            # SHA-256, ECDSA, Base58, Merkle
 │   ├── identity.py                # Identidade persistente de nós
 │   └── p2p_security.py            # Segurança P2P (nonce, scoring)
-├── casino/
-│   ├── backend/                   # Backend do cassino
-│   │   ├── routes.py              # API do cassino
-│   │   ├── deposit_manager.py     # Depósitos/saques USDT
-│   │   ├── game_manager.py        # Gerenciamento de jogos
-│   │   ├── roulette.py            # Roleta Europeia
-│   │   ├── blackjack.py           # Blackjack 21
-│   │   ├── slots.py               # Caça-níqueis
-│   │   ├── dice.py                # Dados
-│   │   ├── baccarat.py            # Baccarat
-│   │   └── infrastructure/        # Produção (Polygon, 2FA, wallets)
-│   └── frontend/                  # Frontend do cassino (React)
 ├── lightning/                     # Lightning Network
 │   ├── lightning_network.py       # Rede LN
 │   ├── channel.py                 # Canais de pagamento
@@ -331,10 +380,18 @@ kuramachain/
 │   ├── htlc.py                    # HTLCs
 │   ├── router.py                  # Roteamento multi-hop
 │   └── api.py                     # API LN
+├── evm/                           # Camada EVM + DeFi (Solidity)
+│   ├── engine.py                  # EVM (py-evm, fork London) + selagem no PoW
+│   ├── rpc.py                     # JSON-RPC eth_*
+│   ├── compiler.py                # Compilação de contratos (solc)
+│   ├── oracle_node.py             # Nó oráculo (preço off-chain → on-chain)
+│   ├── bridge.py                  # Atestação/digest + relayer do bridge
+│   ├── deploy.py                  # Deploy dos contratos (orcáculo, lending, staking, bridge)
+│   └── contracts/                 # ERC-20, DEX, Oráculo, Lending, Staking, Bridge
 ├── node/                          # Gerenciamento de nós
 │   └── node_manager.py            # Rede multi-nó
 ├── frontend/                      # Blockchain Explorer (React)
-├── tests/                         # 40+ testes
+├── tests/                         # Testes
 ├── config.py                      # Configurações centralizadas
 ├── run.py                         # Ponto de entrada
 └── requirements.txt               # Dependências Python
@@ -350,10 +407,15 @@ python -m pytest tests/ -v
 
 # Testes específicos
 python -m pytest tests/test_blockchain.py -v    # Blockchain
-python -m pytest tests/test_casino.py -v        # Cassino
 python -m pytest tests/test_lightning.py -v     # Lightning Network
 python -m pytest tests/test_api.py -v           # API
-python -m pytest tests/test_repository.py -v    # Persistência
+python -m pytest tests/test_evm.py -v           # EVM + ERC-20 + JSON-RPC
+python -m pytest tests/test_dex.py -v           # DEX (AMM x*y=k + LP tokens)
+python -m pytest tests/test_oracle.py -v        # Oráculo (feed + TWAP)
+python -m pytest tests/test_lending.py -v       # Lending (depósito/empréstimo/liquidação)
+python -m pytest tests/test_staking.py -v       # Staking (pools + recompensas)
+python -m pytest tests/test_bridge.py -v        # Bridge (lock/mint + relayer)
+python -m pytest tests/test_rpc_evm.py -v       # JSON-RPC para MetaMask/dApps
 ```
 
 ---
@@ -365,8 +427,6 @@ python -m pytest tests/test_repository.py -v    # Persistência
 |------------|--------|-----|
 | Python | 3.10+ | Linguagem principal |
 | Flask | 2.x | API REST |
-| SQLAlchemy | 2.x | ORM (PostgreSQL) |
-| Web3.py | 6.x | Integração Polygon |
 | Pytest | 7.x | Testes |
 
 ### Frontend
@@ -385,13 +445,10 @@ python -m pytest tests/test_repository.py -v    # Persistência
 
 ## 📄 Licença
 
-Todos os direitos reservados. KuramaChain é uma plataforma de cassino descentralizado com blockchain própria, desenvolvida para operação real com criptomoedas.
+Todos os direitos reservados. KuramaChain é uma blockchain com Proof of Work, carteiras ECDSA e rede Lightning.
 
 ---
 
 <p align="center">
-  <strong>KuramaChain</strong> — Python · Flask · React · TypeScript · TailwindCSS · Polygon · Lightning Network
-</p>
-<p align="center">
-  <sub>💰 Jogue com responsabilidade</sub>
+  <strong>KuramaChain</strong> — Python · Flask · React · TypeScript · TailwindCSS · Lightning Network
 </p>

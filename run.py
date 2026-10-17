@@ -65,7 +65,7 @@ from core.transaction import Transaction
 from config import (
     DEFAULT_PORT, DEFAULT_DIFFICULTY, CHAIN_FILE,
     SSL_CERT_DIR, SSL_CERT_FILE, SSL_KEY_FILE, USE_HTTPS,
-    NETWORK_SECRET, DATA_DIR
+    NETWORK_SECRET, DATA_DIR, EVM_AUTO_MINE, EVM_CHAIN_ID
 )
 
 # ─── Auto-gera NETWORK_SECRET se vazio ─────────────────────────
@@ -223,51 +223,6 @@ def run_single_node(args):
         port=args.port
     )
 
-    # ─── Registra Blueprint do Cassino ──────────────────────────
-    try:
-        from casino.backend.routes import create_casino_blueprint
-        casino_bp = create_casino_blueprint(blockchain=blockchain)
-        app.register_blueprint(casino_bp)
-        print("   [CASINO] Blueprint do cassino registrado em /api/casino/*")
-    except ImportError as e:
-        print(f"   [WARN] Cassino nao disponivel: {e}")
-    except Exception as e:
-        print(f"   [WARN] Erro ao registrar cassino: {e}")
-
-    # ─── Registra Blueprint de Producao (Polygon + Lucro) ────
-    # NOTA: O blueprint e registrado ANTES da inicializacao do
-    # ProductionDepositManager. Isso garante que os endpoints
-    # (como GET /owner/challenge) sejam acessiveis mesmo se a
-    # inicializacao falhar (ex: Polygon RPC indisponivel).
-    prod_manager = None
-    try:
-        from casino.backend.infrastructure.routes import create_production_blueprint
-        from casino.backend.infrastructure.deposit_manager_production import ProductionDepositManager
-        prod_manager = ProductionDepositManager()
-        prod_bp = create_production_blueprint(prod_manager)
-        app.register_blueprint(prod_bp)
-        app.prod_manager = prod_manager
-        print("   [PRODUCTION] Blueprint de producao registrado em /api/v2/casino/*")
-    except ImportError as e:
-        print(f"   [WARN] Blueprint de producao nao disponivel: {e}")
-    except Exception as e:
-        print(f"   [WARN] Erro ao registrar blueprint de producao: {e}")
-        prod_manager = None
-
-    # Inicializa o ProductionDepositManager SEPARADAMENTE apos o
-    # registro do blueprint, para que erros de inicializacao
-    # (ex: sem PostgreSQL, Polygon RPC offline) nao impeçam
-    # os endpoints de estarem disponiveis.
-    if prod_manager:
-        try:
-            prod_manager.initialize()
-            print("   [PRODUCTION] ProductionDepositManager inicializado com sucesso!")
-        except Exception as e:
-            print(f"   [WARN] ProductionDepositManager nao pode ser inicializado: {e}")
-            print("   [WARN]  Os endpoints /api/v2/casino/* estao registrados, mas retornarao")
-            print("   [WARN]  erro 500 ate que as dependencias (PostgreSQL, Polygon RPC)")
-            print("   [WARN]  estejam configuradas corretamente.")
-
     # ─── Registra Blueprint da Lightning Network ────────────────
     try:
         from lightning.api import create_lightning_blueprint
@@ -287,15 +242,21 @@ def run_single_node(args):
     except Exception as e:
         print(f"   [WARN] Erro ao registrar Lightning Network: {e}")
 
-    # ─── Registra Blueprint Polygon ────────────────────────
+    # ─── Registra EVM (Contratos Inteligentes / DeFi) ───────────
     try:
-        from api.polygon_routes import polygon_bp
-        app.register_blueprint(polygon_bp)
-        print("   [POLYGON] Blueprint do Polygon registrado em /api/polygon/*")
+        from evm.engine import EVMEngine
+        from evm.rpc import create_evm_blueprint
+        evm_engine = EVMEngine(auto_mine=EVM_AUTO_MINE)
+        app.register_blueprint(create_evm_blueprint(evm_engine))
+        app.evm_engine = evm_engine
+        # Integra com o PoW: cada bloco minerado sela um bloco EVM.
+        blockchain.on('on_block_mined', evm_engine.on_pow_block)
+        print(f"   [EVM] JSON-RPC eth_* registrado em /rpc "
+              f"(chain_id={EVM_CHAIN_ID}, auto_mine={EVM_AUTO_MINE})")
     except ImportError as e:
-        print(f"   [WARN] Polygon nao disponivel: {e}")
+        print(f"   [WARN] EVM nao disponivel: {e}")
     except Exception as e:
-        print(f"   [WARN] Erro ao registrar Polygon: {e}")
+        print(f"   [WARN] Erro ao registrar EVM: {e}")
 
     print(f"\n[START] Servidor rodando em {protocol}://localhost:{args.port}")
     print(f"\n[ENDPOINT] Endpoints disponíveis:")
@@ -308,8 +269,8 @@ def run_single_node(args):
     print(f"   GET  /nodes/resolve        - Consenso")
     print(f"   GET  /validate             - Validar blockchain")
     print(f"   GET  /stats                - Estatísticas")
-    print(f"   GET  /api/casino/*         - Cassino (jogos, depositos)")
     print(f"   GET  /api/lightning/*     - Lightning Network (canais, pagamentos)")
+    print(f"   POST /rpc                 - JSON-RPC EVM (eth_*, contratos Solidity)")
     if use_ssl:
         print(f"\n[TIP] Teste: curl -k https://localhost:{args.port}/chain\n")
     else:
