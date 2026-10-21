@@ -1,14 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   KURAMA_CHAIN_ID,
-  connectMetaMask,
+  connectKuramaWallet,
   ensureKuramaChain,
   getEvmProvider,
-  isMetaMaskInstalled,
+  isEvmWalletInstalled,
   sendWalletTransaction,
   shortAddress,
   waitForTransactionReceipt,
-} from '../api/metamask';
+} from '../api/evmWallet';
 import {
   applySlippage,
   defaultRouterAddress,
@@ -68,7 +68,7 @@ function errorMessage(err: unknown): string {
 }
 
 /**
- * Swap do DEX assinado pela carteira (MetaMask / EIP-1193).
+ * Swap do DEX assinado pela carteira (EIP-1193).
  *
  * O usuário informa o `KurRouter` e os dois tokens ERC-20; o par é descoberto
  * no factory (`getPair`) e as reservas em `getReserves()`. A cotação usa a
@@ -95,7 +95,7 @@ export default function SwapCard() {
   const [received, setReceived] = useState<bigint | null>(null);
 
   const quoteSeq = useRef(0);
-  const installed = isMetaMaskInstalled();
+  const installed = isEvmWalletInstalled();
   const slippageBps = Math.min(9_999, Math.max(0, Number.parseFloat(slippage) || 50));
 
   useEffect(() => store(ROUTER_KEY, router), [router]);
@@ -197,7 +197,7 @@ export default function SwapCard() {
   const handleConnect = async () => {
     setError(null);
     try {
-      const next = await connectMetaMask();
+      const next = await connectKuramaWallet();
       setAccount(next);
       const eth = getEvmProvider();
       if (eth) setChainId(parseInt((await eth.request({ method: 'eth_chainId' })) as string, 16));
@@ -229,8 +229,8 @@ export default function SwapCard() {
     setApproveTx(null);
     setSwapTx(null);
     try {
-      if (!getEvmProvider()) throw new Error('Instale a MetaMask para assinar o swap');
-      const from = await connectMetaMask();
+      if (!getEvmProvider()) throw new Error('Instale uma carteira EVM para assinar o swap');
+      const from = await connectKuramaWallet();
       setAccount(from);
 
       if (quote.amountIn <= 0n) throw new Error('Informe a quantidade de entrada');
@@ -328,7 +328,7 @@ export default function SwapCard() {
             onClick={handleConnect}
             className="px-4 py-2 bg-kur-accent/10 text-kur-accent border border-kur-accent/30 rounded-lg hover:bg-kur-accent/20 transition-colors text-sm"
           >
-            {installed ? 'Conectar carteira' : 'Instalar MetaMask'}
+            {installed ? 'Connect Wallet' : 'Instalar carteira EVM'}
           </button>
         )}
       </div>

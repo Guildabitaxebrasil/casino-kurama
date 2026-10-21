@@ -1,28 +1,66 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
-  connectMetaMask,
+  activeEvmWallet,
+  connectKuramaWallet,
   ensureKuramaChain,
   formatKur,
   getEvmBalance,
   getEvmProvider,
-  isMetaMaskInstalled,
+  isEvmWalletInstalled,
   KURAMA_CHAIN_ID,
   kuramaRpcUrl,
+  listEvmWallets,
+  selectEvmWallet,
   shortAddress,
-} from '../api/metamask';
+  type Eip6963ProviderInfo,
+} from '../api/evmWallet';
 
 /**
- * Card de conexão MetaMask (Fase 6): adiciona/troca para a KuramaChain,
+ * Card "Connect Wallet" (Fase 6): adiciona/troca para a KuramaChain,
  * mostra endereço/chain/saldo e avisa quando a wallet está fora da rede.
  */
-export default function MetaMaskCard() {
+export default function EvmWalletCard() {
   const [address, setAddress] = useState<string | null>(null);
   const [chainId, setChainId] = useState<number | null>(null);
   const [balance, setBalance] = useState<bigint | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [wallets, setWallets] = useState<Eip6963ProviderInfo[]>([]);
+  const [walletRdns, setWalletRdns] = useState('');
+  const [walletName, setWalletName] = useState('');
 
-  const installed = isMetaMaskInstalled();
+  // Descoberta EIP-6963: cada wallet anuncia o seu provider, evitando o
+  // conflito de `window.ethereum` entre extensões.
+  useEffect(() => {
+    let cancelled = false;
+    const load = () => {
+      if (cancelled) return;
+      setWallets(listEvmWallets());
+      const active = activeEvmWallet();
+      setWalletRdns(active?.rdns ?? '');
+      setWalletName(active?.name ?? '');
+    };
+    load();
+    // Os anúncios chegam no primeiro tick; rechecagem evita corrida.
+    const timer = setTimeout(load, 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, []);
+
+  const installed = wallets.length > 0 || isEvmWalletInstalled();
+
+  const handleSelectWallet = (rdns: string) => {
+    selectEvmWallet(rdns);
+    setWalletRdns(rdns);
+    setWalletName(activeEvmWallet()?.name ?? '');
+    // Trocar de provider invalida a conta/rede lidas da carteira anterior.
+    setAddress(null);
+    setBalance(null);
+    setChainId(null);
+    setError(null);
+  };
 
   const refresh = useCallback(async (account: string | null) => {
     if (!account) {
@@ -81,11 +119,11 @@ export default function MetaMaskCard() {
     setLoading(true);
     setError(null);
     try {
-      const account = await connectMetaMask();
+      const account = await connectKuramaWallet();
       setAddress(account);
       await refresh(account);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Falha ao conectar a MetaMask');
+      setError(err instanceof Error ? err.message : 'Falha ao conectar a carteira');
     } finally {
       setLoading(false);
     }
@@ -110,21 +148,39 @@ export default function MetaMaskCard() {
     <div className="bg-kur-bg-card border border-kur-border rounded-xl p-4 sm:p-5 mb-6">
       <div className="flex items-start justify-between gap-3 mb-3">
         <div>
-          <h2 className="text-base sm:text-lg font-semibold text-kur-text">MetaMask (dApp / EVM)</h2>
+          <h2 className="text-base sm:text-lg font-semibold text-kur-text">Connect Wallet</h2>
           <p className="text-xs text-kur-text-muted mt-1">
             Chain ID {KURAMA_CHAIN_ID} · RPC <code className="text-kur-accent">{kuramaRpcUrl()}</code>
           </p>
         </div>
         {installed ? (
           <span className="text-[10px] px-2 py-1 rounded bg-kur-green/10 text-kur-green whitespace-nowrap">
-            MetaMask detectada
+            {walletName ? `${walletName} detectada` : 'Carteira EVM detectada'}
           </span>
         ) : (
           <span className="text-[10px] px-2 py-1 rounded bg-kur-orange/10 text-kur-orange whitespace-nowrap">
-            MetaMask não instalada
+            Nenhuma carteira EVM
           </span>
         )}
       </div>
+
+      {wallets.length > 1 && (
+        <div className="flex flex-wrap gap-2 mb-3">
+          {wallets.map((info) => (
+            <button
+              key={info.rdns}
+              onClick={() => handleSelectWallet(info.rdns)}
+              className={`px-3 py-1 text-xs rounded-lg border transition-colors ${
+                info.rdns === walletRdns
+                  ? 'bg-kur-accent/20 text-kur-accent border-kur-accent/30'
+                  : 'bg-kur-bg text-kur-text-muted border-kur-border hover:text-kur-text'
+              }`}
+            >
+              {info.name}
+            </button>
+          ))}
+        </div>
+      )}
 
       {error && (
         <div className="mb-3 bg-kur-red/5 border border-kur-red/20 rounded-lg p-3">
@@ -138,7 +194,7 @@ export default function MetaMaskCard() {
           disabled={loading}
           className="px-5 py-2.5 bg-kur-accent/10 text-kur-accent border border-kur-accent/30 rounded-lg hover:bg-kur-accent/20 transition-colors text-sm disabled:opacity-50"
         >
-          {loading ? 'Conectando...' : 'Conectar MetaMask'}
+          {loading ? 'Conectando...' : 'Connect Wallet'}
         </button>
       ) : (
         <div className="space-y-3">

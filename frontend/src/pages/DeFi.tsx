@@ -2,8 +2,9 @@ import { useState } from 'react';
 import { getChainInfo, readToken, readOraclePrice, readLendingPosition } from '../api/defi';
 import { getStats } from '../api/client';
 import LoadingSpinner from '../components/LoadingSpinner';
-import MetaMaskCard from '../components/MetaMaskCard';
+import EvmWalletCard from '../components/EvmWalletCard';
 import SwapCard from '../components/SwapCard';
+import UniswapCard from '../components/UniswapCard';
 import StatCard from '../components/StatCard';
 
 export default function DeFi() {
@@ -13,7 +14,7 @@ export default function DeFi() {
   const [error, setError] = useState<string | null>(null);
 
   // Seções de DeFi
-  const [tab, setTab] = useState<'overview' | 'token' | 'oracle' | 'swap' | 'lending'>('overview');
+  const [tab, setTab] = useState<'overview' | 'token' | 'oracle' | 'swap' | 'uniswap' | 'lending'>('overview');
   const [tokenAddress, setTokenAddress] = useState('');
   const [tokenInfo, setTokenInfo] = useState<any>(null);
   const [tokenLoading, setTokenLoading] = useState(false);
@@ -124,7 +125,7 @@ export default function DeFi() {
 
       {/* Abas */}
       <div className="flex flex-wrap gap-2 mb-6 border-b border-kur-border pb-3">
-        {(['overview', 'token', 'oracle', 'swap', 'lending'] as const).map((t) => (
+        {(['overview', 'token', 'oracle', 'swap', 'uniswap', 'lending'] as const).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -138,6 +139,7 @@ export default function DeFi() {
             {t === 'token' && 'Token (ERC-20)'}
             {t === 'oracle' && 'Oráculo'}
             {t === 'swap' && 'Swap (DEX)'}
+            {t === 'uniswap' && 'Uniswap (Polygon)'}
             {t === 'lending' && 'Lending'}
           </button>
         ))}
@@ -146,7 +148,7 @@ export default function DeFi() {
       {/* Visão geral */}
       {tab === 'overview' && (
         <>
-        <MetaMaskCard />
+        <EvmWalletCard />
         <div className="bg-kur-bg-card border border-kur-border rounded-xl p-4 sm:p-5">
           <h2 className="text-base sm:text-lg font-semibold text-kur-text mb-3">Estado da Camada DeFi</h2>
           <p className="text-xs sm:text-sm text-kur-text-muted mb-4">
@@ -279,6 +281,9 @@ export default function DeFi() {
 
       {/* Swap */}
       {tab === 'swap' && <SwapCard />}
+
+      {/* Uniswap (Polygon) */}
+      {tab === 'uniswap' && <UniswapCard />}
 
       {/* Lending */}
       {tab === 'lending' && (

@@ -6,7 +6,7 @@
  * informado (o factory é lido on-chain em `router.factory()`).
  *
  * Só leitura aqui — a escrita (approve + swap) é assinada pela wallet em
- * `metamask.ts`/`SwapCard`.
+ * `evmWallet.ts`/`SwapCard`.
  */
 import {
   SELECTORS,
@@ -19,7 +19,7 @@ import {
   isZeroAddress,
   sameAddress,
 } from './evmAbi';
-import { rpcRequest } from './metamask';
+import { rpcRequest } from './evmWallet';
 
 /** `eth_call` cru (`0x...`). Lança se a chamada reverter/sem código. */
 export async function ethCall(to: string, data: string): Promise<string> {

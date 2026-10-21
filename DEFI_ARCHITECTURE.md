@@ -95,7 +95,7 @@ opcional derivado da mesma chave.
 | 4 | **Bridges** | **Implementado** como bridge próprio **lock/mint**: `KurBridge` (trava/queima na origem, libera/cunha no destino) + `KurWrappedToken` + **relayer** Python (`evm/bridge.py`) com atestação **m-de-n** de validadores. Mensageria (LayerZero/Axelar) segue como opção de ecossistema. |
 | 5 | **Oráculos** | Padrão **Chainlink aggregator**: contrato `AggregatorV3Interface` + **nó oráculo** (Python) que assina preços off-chain e publica on-chain (feed de preço KUR/USD etc.). TWAP da DEX como fallback. |
 | 6 | **Lending/Borrowing** | Fork do **Aave V2** em Solidity: `LendingPool`, `aToken`, `debtToken`, colateralização + liquidação por oráculo. |
-| 7 | **Wallets e dApps** | **MetaMask** (EIP-1193/JSON-RPC `eth_*`): o nó responde `eth_chainId`, `eth_getBalance`, `eth_call`, `eth_sendRawTransaction`, `eth_getTransactionReceipt` (com logs), `eth_getLogs`, `eth_getTransactionByHash`, `eth_getBlockBy*` e `eth_feeHistory`, com CORS. O frontend traz o card de conexão + `wallet_addEthereumChain` (`frontend/src/api/metamask.ts`). WalletConnect fica como próximo passo. |
+| 7 | **Wallets e dApps** | **MetaMask** (EIP-1193/JSON-RPC `eth_*`): o nó responde `eth_chainId`, `eth_getBalance`, `eth_call`, `eth_sendRawTransaction`, `eth_getTransactionReceipt` (com logs), `eth_getLogs`, `eth_getTransactionByHash`, `eth_getBlockBy*` e `eth_feeHistory`, com CORS. O frontend traz o card **Connect Wallet** + `wallet_addEthereumChain` (`frontend/src/api/evmWallet.ts`). WalletConnect fica como próximo passo. |
 | 8 | **Staking/Farming** | **Implementado**: `KurStaking` multi-pool (`accRewardPerShare`) com recompensa por segundo e orçamento de prêmio separado do principal (stake KUR → ganha KUR é suportado). |
 
 ### Interoperabilidade ("conversar com outras redes")
@@ -125,7 +125,8 @@ A camada 0 resolve isso via **duas peças**:
 | **4. Lending** | Aave V2 fork + liquidação por oráculo | Depósito, empréstimo e liquidação funcionando | ✅ `KurLendingPool/KurScaledToken/KurPriceOracle` · `tests/test_lending.py` |
 | **5. Staking/Farming** | `KurStaking` (pools, taxa por segundo, orçamento de prêmio) + deploy/testes | `stake`/`claim`/`withdraw` corretos, prêmio para em `rewardEnd` e nunca consome o principal | ✅ `KurStaking.sol` · `tests/test_staking.py` |
 | **5. Bridge/Interop** | `KurBridge` lock/mint + `KurWrappedToken` + relayer com atestação m-de-n | Depósito na origem → wrapped no destino; volta queima e libera; replay/assinatura inválida rejeitados | ✅ `KurBridge.sol`, `KurWrappedToken.sol`, `evm/bridge.py` · `tests/test_bridge.py` |
-| **6. Wallets/dApps** | JSON-RPC completo (logs, blocos, storage) + CORS + card MetaMask + **swap do DEX assinado pela carteira** | Conectar carteira na chain 9090, ler saldo/blocos/logs, enviar tx assinada e trocar qualquer par ERC-20 do `KurFactory` | ✅ `evm/rpc.py`, `frontend/src/api/{metamask,evmAbi,dex}.ts`, `SwapCard.tsx` · `tests/test_rpc_evm.py` (WalletConnect ⏳) |
+| **6. Wallets/dApps** | JSON-RPC completo (logs, blocos, storage) + CORS + card Connect Wallet + **swap do DEX assinado pela carteira** | Conectar carteira na chain 9090, ler saldo/blocos/logs, enviar tx assinada e trocar qualquer par ERC-20 do `KurFactory` | ✅ `evm/rpc.py`, `frontend/src/api/{evmWallet,evmAbi,dex}.ts`, `SwapCard.tsx` · `tests/test_rpc_evm.py` (WalletConnect ⏳) |
+| **6b. Uniswap (Polygon)** | **Ponte com pools Uniswap V3** na chain 137: leitura de pool + cotação (QuoterV2) + swap no SwapRouter02 | Trocar USDC/USDT/MATIC/WETH/WBTC nos pools reais, com approve/slippage e MATIC nativo | ✅ `frontend/src/api/uniswap.ts`, `UniswapCard.tsx` |
 
 **Dependência:** as fases 1–6 **dependem da Fase 0**. Sem a camada EVM, nada
 de Solidity funciona.
@@ -386,7 +387,7 @@ com o nó de outra origem.
 
 **3. MetaMask.** A wallet assina localmente e envia a transação **crua**
 (`eth_sendRawTransaction`) — o nó não custodia chave. O frontend
-(`frontend/src/api/metamask.ts` + `MetaMaskCard.tsx`) pede contas
+(`frontend/src/api/evmWallet.ts` + `EvmWalletCard.tsx`) pede contas
 (`eth_requestAccounts`), adiciona/troca a rede (`wallet_addEthereumChain` /
 `wallet_switchEthereumChain`, chain ID 9090) e mostra endereço, saldo e rede.
 
@@ -395,6 +396,9 @@ ciclo do DEX sem trazer ethers.js/web3.js:
 
 - `evmAbi.ts` guarda os **seletores/tópicos** (`keccak256`) e codifica/decodifica
   ABI à mão (`uint256`, `address`, `address[]`);
+- `uniswap.ts` faz a ponte com os pools **Uniswap V3 da Polygon** (`factory.getPool`
+  → `slot0`/`liquidity`, cotação no `QuoterV2`, swap no `SwapRouter02`), usando o
+  mesmo provider da carteira e RPC público configurável por `VITE_POLYGON_RPC_URL`;
 - `dex.ts` descobre o par em `router.factory()` → `getPair(tokenIn, tokenOut)`,
   lê `getReserves()`/`token0()`/`decimals()`/`balanceOf()`/`allowance()` por
   `eth_call` e cota com a **mesma fórmula** do contrato (0,3% de taxa);
@@ -412,7 +416,7 @@ tx reverter por falta de gas. Revert na simulação vira erro JSON-RPC (-32000),
 para a wallet avisar antes de assinar.
 
 ```bash
-# configure no MetaMask (ou clique em “Conectar MetaMask” na aba DeFi)
+# configure no MetaMask (ou clique em “Connect Wallet” na aba DeFi)
 Rede:        KuramaChain
 RPC URL:     http://localhost:5000/rpc   (o frontend usa <origem>/rpc)
 Chain ID:    9090

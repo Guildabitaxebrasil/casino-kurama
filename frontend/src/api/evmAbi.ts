@@ -20,8 +20,10 @@ export const SELECTORS = {
   getPair: '0xe6a43905',
   /** KurPair.getReserves() → (uint112, uint112, uint32) */
   getReserves: '0x0902f1ac',
-  /** KurPair.token0() */
+  /** KurPair.token0() / UniswapV3Pool.token0() */
   token0: '0x0dfe1681',
+  /** UniswapV3Pool.token1() */
+  token1: '0xd21220a7',
   decimals: '0x313ce567',
   symbol: '0x95d89b41',
   name: '0x06fdde03',

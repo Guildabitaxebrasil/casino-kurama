@@ -177,11 +177,11 @@ MetaMask, ethers.js e web3.js falam.
 | 4 | **Lending** (Aave V2: depósito, empréstimo e liquidação por oráculo) | `KurLendingPool.sol`, `KurScaledToken.sol`, `KurPriceOracle.sol` | `tests/test_lending.py` |
 | 5 | **Staking/Farming** (pools com recompensa por segundo) | `KurStaking.sol` | `tests/test_staking.py` |
 | 5 | **Bridge** lock/mint com validadores m-de-n + relayer | `KurBridge.sol`, `KurWrappedToken.sol`, `evm/bridge.py` | `tests/test_bridge.py` |
-| 6 | **Wallets/dApps** (JSON-RPC completo + card MetaMask + swap pela carteira) | `evm/rpc.py`, `frontend/src/api/metamask.ts`, `evmAbi.ts`, `dex.ts` | `tests/test_rpc_evm.py` |
+| 6 | **Wallets/dApps** (JSON-RPC completo + card Connect Wallet + swap pela carteira) | `evm/rpc.py`, `frontend/src/api/evmWallet.ts`, `evmAbi.ts`, `dex.ts`, `uniswap.ts` | `tests/test_rpc_evm.py` |
 
 ### Swap assinado pela carteira
 
-A aba **DeFi → Swap** executa o swap do DEX com a wallet (MetaMask/EIP-1193),
+A aba **DeFi → Swap** executa o swap do DEX com a wallet (EIP-1193),
 sem ethers.js/web3.js no bundle:
 
 1. informe o endereço do **`KurRouter`** (ou defina `VITE_KUR_ROUTER` na build);
@@ -194,6 +194,21 @@ sem ethers.js/web3.js no bundle:
 
 A chave privada nunca sai da wallet. `eth_estimateGas` estima com o `from` real
 (`evm/engine.py`) — um swap gasta ~134k, então o gas limit acompanha a transação.
+
+### Uniswap V3 na Polygon (ponte de liquidez)
+
+A aba **DeFi → Uniswap (Polygon)** troca nos pools reais da Uniswap V3 na Polygon
+(chain 137), sem SDK: `frontend/src/api/uniswap.ts` lê o pool pelo RPC público
+(`factory.getPool` → `slot0`/`liquidity`) e cota com o **QuoterV2**;
+o swap é montado para o **SwapRouter02** e assinado pela carteira.
+
+- a taxa do pool (0,01%/0,05%/0,3%/1%) é detectada pela liquidez, ou escolhida à mão;
+- MATIC nativo entra como `value` e sai via `multicall([exactInputSingle, unwrapWETH9])`;
+- `approve` é pedido só quando a allowance para o router é insuficiente;
+- recotação imediata antes de assinar, com slippage em bps.
+
+O card usa RPCs públicos por padrão (`polygon-bor-rpc.publicnode.com`, `1rpc.io/matic`,
+`polygon.drpc.org`); para usar seu nó, defina `VITE_POLYGON_RPC_URL` no `frontend/.env`.
 
 ### Oráculo
 

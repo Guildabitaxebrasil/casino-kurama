@@ -33,6 +33,8 @@ export default function SendTransaction({ isOpen, onClose, onSuccess, onError }:
     }
   }, [isOpen]);
 
+  const isEvmReceiver = /^0x[0-9a-fA-F]{40}$/.test(receiver.trim());
+
   const handleOverlayClick = (e: React.MouseEvent) => {
     if (e.target === overlayRef.current) onClose();
   };
@@ -175,6 +177,12 @@ export default function SendTransaction({ isOpen, onClose, onSuccess, onError }:
               placeholder="Endereço da carteira de destino..."
               className="w-full bg-kur-bg border border-kur-border rounded-lg px-3 py-2.5 text-sm font-mono text-kur-text placeholder-kur-text-muted focus:outline-none focus:border-kur-accent"
             />
+            {isEvmReceiver && (
+              <p className="mt-1.5 text-xs text-kur-text-muted">
+                Destino EVM (Connect Wallet): os KUR também são creditados na KuramaChain EVM
+                (chain 9090), onde a carteira consegue ver o saldo.
+              </p>
+            )}
           </div>
 
           {/* Amount and Fee */}
