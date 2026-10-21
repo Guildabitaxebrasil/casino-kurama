@@ -2,15 +2,12 @@ import { useState, useCallback } from 'react';
 import SearchBar from './SearchBar';
 import SendTransaction from './SendTransaction';
 import ConnectWallet from './ConnectWallet';
-import NetworkSelector, { type NetworkType } from './NetworkSelector';
 
 interface Props {
   onToggleSidebar: () => void;
-  network?: NetworkType;
-  onNetworkChange?: (network: NetworkType) => void;
 }
 
-export default function TopBar({ onToggleSidebar, network = 'kurama', onNetworkChange }: Props) {
+export default function TopBar({ onToggleSidebar }: Props) {
   const [showSendModal, setShowSendModal] = useState(false);
   const [toast, setToast] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
@@ -37,14 +34,6 @@ export default function TopBar({ onToggleSidebar, network = 'kurama', onNetworkC
         <div className="flex-1 max-w-xl">
           <SearchBar />
         </div>
-
-        {/* Network Selector */}
-        {onNetworkChange && (
-          <NetworkSelector
-            network={network}
-            onNetworkChange={onNetworkChange}
-          />
-        )}
 
         {/* Action Buttons */}
         <div className="flex items-center gap-2">

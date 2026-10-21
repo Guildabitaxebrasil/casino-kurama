@@ -50,7 +50,17 @@ export const syncNodes = () => postData<{ message: string; chain_replaced: boole
 
 // Signed transaction (dev helper: server-side signing)
 export const createSignedTransaction = (data: { private_key_pem: string; receiver: string; amount: number; fee?: number }) =>
-  postData<{ message: string; transaction: Transaction; transaction_index: number; sender_address: string; sender_balance: number }>('/api/transactions/create-signed', data);
+  postData<{
+    message: string;
+    transaction: Transaction;
+    transaction_index: number;
+    sender_address: string;
+    sender_balance: number;
+    /** Hash da transferência que creditou o destino na EVM (destino 0x...). */
+    evm_tx_hash?: string | null;
+    evm_credited_wei?: number;
+    evm_balance?: number | null;
+  }>('/api/transactions/create-signed', data);
 
 // Stats & Explorer
 export const getStats = () => fetchData<Stats>('/stats');

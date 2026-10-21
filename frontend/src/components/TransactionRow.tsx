@@ -11,9 +11,19 @@ export default function TransactionRow({ tx }: Props) {
   return (
     <tr className="border-b border-kur-border hover:bg-kur-bg-hover/50 transition-colors">
       <td className="py-3 px-4">
-        <p className="font-mono text-xs text-kur-accent truncate max-w-[120px]" title={tx.transaction_id}>
-          {tx.transaction_id.slice(0, 16)}...
-        </p>
+        <div className="flex items-center gap-2">
+          <p className="font-mono text-xs text-kur-accent truncate max-w-[120px]" title={tx.transaction_id}>
+            {tx.transaction_id.slice(0, 16)}...
+          </p>
+          {tx.evm_tx_hash && (
+            <span
+              className="text-[10px] px-1.5 py-0.5 rounded bg-kur-accent/10 text-kur-accent whitespace-nowrap"
+              title={`Depósito na EVM: ${tx.evm_tx_hash}`}
+            >
+              EVM
+            </span>
+          )}
+        </div>
       </td>
       <td className="py-3 px-4">
         {isCoinbase ? (

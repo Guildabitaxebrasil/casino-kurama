@@ -8,6 +8,7 @@ Execute com: python -m pytest tests/test_api.py -v
 """
 import sys
 import os
+import tempfile
 import unittest
 import json
 
@@ -174,6 +175,49 @@ class TestAPITransactions(unittest.TestCase):
         self.assertIn('transaction', data)
         self.assertIn('sender_address', data)
 
+    def test_create_signed_transaction_to_evm_address_credits_evm(self):
+        """Destino 0x... deve ser creditado também na EVM (visivel na Rabby)."""
+        from evm.engine import EVMEngine
+
+        # Isola o ledger de depósitos para não escrever em data/.
+        tmp = tempfile.TemporaryDirectory()
+        prev_ledger = os.environ.get('EVM_DEPOSIT_LEDGER')
+        os.environ['EVM_DEPOSIT_LEDGER'] = os.path.join(tmp.name, 'ledger.json')
+        engine = EVMEngine(auto_mine=True)
+        self.app.evm_engine = engine
+        try:
+            self.client.post('/mine', json={'miner_address': self.miner.address})
+            evm_receiver = '0x742d35Cc6634C0532925a3b844Bc9e7595f2bD18'
+            resp = self.client.post('/api/transactions/create-signed', json={
+                'private_key_pem': self.miner.private_key_pem,
+                'receiver': evm_receiver,
+                'amount': 50.0,
+                'fee': 0.001,
+            })
+            self.assertEqual(resp.status_code, 201, msg=resp.get_json())
+            data = resp.get_json()
+            self.assertTrue(data.get('evm_tx_hash'))
+            self.assertEqual(data.get('evm_credited_wei'), 50 * 10 ** 18)
+            self.assertEqual(engine.get_balance(evm_receiver), 50 * 10 ** 18)
+            receipt = engine.get_transaction_receipt(data['evm_tx_hash'])
+            self.assertIsNotNone(receipt)
+            self.assertEqual(receipt['status'], '0x1')
+
+            # O histórico expõe o hash do depósito para a UI (após minerar).
+            self.client.post('/mine', json={'miner_address': self.miner.address})
+            history = self.client.get(
+                f'/api/transactions?receiver={evm_receiver}').get_json()
+            self.assertEqual(history['total'], 1)
+            self.assertEqual(history['transactions'][0]['evm_tx_hash'],
+                             data['evm_tx_hash'])
+        finally:
+            self.app.evm_engine = None
+            if prev_ledger is None:
+                os.environ.pop('EVM_DEPOSIT_LEDGER', None)
+            else:
+                os.environ['EVM_DEPOSIT_LEDGER'] = prev_ledger
+            tmp.cleanup()
+
     def test_get_pending_transactions(self):
         """GET /transactions/pending deve retornar transacoes pendentes."""
         resp = self.client.get('/transactions/pending')
@@ -285,6 +329,32 @@ class TestAPIExplorer(unittest.TestCase):
         self.assertIn('page', data)
         self.assertIn('total_pages', data)
         self.assertEqual(data['page'], 1)
+
+    def test_get_transactions_filter_by_sender_and_receiver(self):
+        """GET /api/transactions?sender/receiver deve filtrar por lado."""
+        miner, receiver = Wallet(), Wallet()
+        self.client.post('/mine', json={'miner_address': miner.address})
+        resp = self.client.post('/api/transactions/create-signed', json={
+            'private_key_pem': miner.private_key_pem,
+            'receiver': receiver.address,
+            'amount': 1.0,
+            'fee': 0.001,
+        })
+        self.assertEqual(resp.status_code, 201, msg=resp.get_json())
+        self.client.post('/mine', json={'miner_address': miner.address})
+
+        received = self.client.get(
+            f'/api/transactions?receiver={receiver.address}').get_json()
+        self.assertGreaterEqual(received['total'], 1)
+        for tx in received['transactions']:
+            self.assertEqual(tx['receiver'], receiver.address)
+
+        sent = self.client.get(
+            f'/api/transactions?sender={miner.address}').get_json()
+        self.assertGreaterEqual(sent['total'], 1)
+        for tx in sent['transactions']:
+            self.assertTrue(tx.get('sender') == miner.address
+                            or tx.get('sender_address') == miner.address)
 
     def test_get_block_by_index(self):
         """GET /api/blocks/<index> deve retornar o bloco."""

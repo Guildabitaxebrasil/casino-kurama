@@ -58,7 +58,12 @@ try:
     app.register_blueprint(create_evm_blueprint(evm_engine))
     app.evm_engine = evm_engine
     blockchain.on('on_block_mined', evm_engine.on_pow_block)
+    from evm.deposits import reconcile_native_deposits
+    deposit_report = reconcile_native_deposits(blockchain, evm_engine)
     print(f"[EVM] JSON-RPC eth_* registrado em /rpc (chain_id={EVM_CHAIN_ID})")
+    if deposit_report['credited'] or deposit_report['failed']:
+        print(f"[EVM] depósitos recreditados: {deposit_report['credited']} "
+              f"(falhas: {len(deposit_report['failed'])})")
 except Exception as e:
     print(f"[WARN] EVM: {e}")
 

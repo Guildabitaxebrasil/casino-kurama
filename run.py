@@ -251,8 +251,15 @@ def run_single_node(args):
         app.evm_engine = evm_engine
         # Integra com o PoW: cada bloco minerado sela um bloco EVM.
         blockchain.on('on_block_mined', evm_engine.on_pow_block)
+        # Recredita na EVM os depósitos que já estão no ledger nativo
+        # (o estado EVM é em memória e recomeça do gênesis).
+        from evm.deposits import reconcile_native_deposits
+        deposit_report = reconcile_native_deposits(blockchain, evm_engine)
         print(f"   [EVM] JSON-RPC eth_* registrado em /rpc "
               f"(chain_id={EVM_CHAIN_ID}, auto_mine={EVM_AUTO_MINE})")
+        if deposit_report['credited'] or deposit_report['failed']:
+            print(f"   [EVM] depósitos recreditados: {deposit_report['credited']} "
+                  f"(falhas: {len(deposit_report['failed'])})")
     except ImportError as e:
         print(f"   [WARN] EVM nao disponivel: {e}")
     except Exception as e:

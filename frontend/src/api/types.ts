@@ -19,6 +19,8 @@ export interface Transaction {
   signature: string | null;
   sender_address: string | null;
   nonce?: string;
+  /** Hash da tx EVM que creditou este envio para um destino 0x... */
+  evm_tx_hash?: string | null;
 }
 
 export interface WalletInfo {

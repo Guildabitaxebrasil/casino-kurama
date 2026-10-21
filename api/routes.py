@@ -1217,15 +1217,26 @@ Documentação completa dos endpoints e schemas.
         Query params:
             page: Número da página (default: 1)
             per_page: Itens por página (default: 20)
-            address: Filtrar por endereço
+            address: Filtrar por endereço (remetente OU destinatário)
+            sender: Filtrar só por remetente
+            receiver: Filtrar só por destinatário
             min_amount: Valor mínimo
             max_amount: Valor máximo
         """
         page = request.args.get('page', 1, type=int)
         per_page = request.args.get('per_page', 20, type=int)
         address = request.args.get('address', None, type=str)
+        sender = request.args.get('sender', None, type=str)
+        receiver = request.args.get('receiver', None, type=str)
         min_amount = request.args.get('min_amount', None, type=float)
         max_amount = request.args.get('max_amount', None, type=float)
+
+        # Ledger de depósitos nativo → EVM (transaction_id → hash EVM).
+        try:
+            from evm.deposits import get_deposit_hash, load_ledger
+            deposit_ledger = load_ledger()
+        except Exception:
+            deposit_ledger = {}
 
         # Coleciona todas as transações com info do bloco
         all_txs = []
@@ -1234,6 +1245,10 @@ Documentação completa dos endpoints e schemas.
                 tx_dict = tx.to_dict() if hasattr(tx, 'to_dict') else tx
                 tx_dict['block_index'] = block.index
                 tx_dict['confirmed'] = True
+                evm_hash = get_deposit_hash(
+                    tx_dict.get('transaction_id'), deposit_ledger)
+                if evm_hash:
+                    tx_dict['evm_tx_hash'] = evm_hash
                 all_txs.append(tx_dict)
 
         # Aplica filtros
@@ -1244,6 +1259,15 @@ Documentação completa dos endpoints e schemas.
                 or tx.get('receiver') == address
                 or tx.get('sender_address') == address
             ]
+        # `sender`/`receiver` são usados pelo frontend; sem eles a lista de
+        # enviadas e recebidas traz tudo e cada tx aparece duplicada na UI.
+        if sender:
+            all_txs = [
+                tx for tx in all_txs
+                if tx.get('sender') == sender or tx.get('sender_address') == sender
+            ]
+        if receiver:
+            all_txs = [tx for tx in all_txs if tx.get('receiver') == receiver]
         if min_amount is not None:
             all_txs = [tx for tx in all_txs if tx.get('amount', 0) >= min_amount]
         if max_amount is not None:
@@ -1626,6 +1650,25 @@ Documentação completa dos endpoints e schemas.
             amount = float(data['amount'])
             fee = float(data.get('fee', 0.001))
 
+            # ─── Destino EVM (0x...) ────────────────────────────
+            # A EVM da KuramaChain tem estado próprio: creditar só a camada
+            # nativa não aparece na Rabby/MetaMask. Para um destino 0x, o
+            # mesmo valor é liberado na EVM pela reserva de demo (conta de
+            # dev, financiada no gênesis) — modelo lock (nativo) / mint (EVM).
+            evm_engine = getattr(app, 'evm_engine', None)
+            evm_wei = 0
+            if evm_engine is not None and CryptoUtils.is_valid_evm_address(receiver):
+                from evm.deposits import credit_native_deposit, kur_to_wei
+                evm_wei = kur_to_wei(amount)
+                reserve = evm_engine.get_balance(evm_engine.dev_address)
+                if reserve < evm_wei:
+                    return jsonify({
+                        'error': 'Reserva EVM insuficiente para creditar o destino',
+                        'code': 'EVM_RESERVE_LOW',
+                        'reserve_kur': reserve / 10 ** 18,
+                        'requested_kur': amount,
+                    }), 400
+
             # Cria e assina a transação
             tx = Transaction(
                 sender=wallet.public_key_pem,
@@ -1650,12 +1693,33 @@ Documentação completa dos endpoints e schemas.
                 transaction_id=tx.transaction_id
             )
 
+            # Crédito na EVM (depósito) — o recibo/débito nativo não move
+            # estado EVM por si só. O ledger guarda transaction_id → hash EVM
+            # para o explorer e para a reconciliação no próximo startup.
+            evm_tx_hash = None
+            if evm_wei:
+                try:
+                    evm_tx_hash = credit_native_deposit(
+                        evm_engine, receiver, amount, tx.transaction_id,
+                    )
+                except Exception as exc:
+                    # A tx nativa já entrou na mempool: não aborta, mas avisa.
+                    app.logger.warning('[EVM] crédito de depósito falhou: %s', exc)
+
+            message = f'Transação criada e assinada! Será minerada no bloco #{index}'
+            if evm_tx_hash:
+                message += (f' Depósito de {amount:g} KUR creditado na EVM '
+                            f'(tx {evm_tx_hash[:18]}…) — visível na Rabby/MetaMask.')
+
             return jsonify({
-                'message': f'Transação criada e assinada! Será minerada no bloco #{index}',
+                'message': message,
                 'transaction': tx.to_dict(),
                 'transaction_index': index,
                 'sender_address': wallet.address,
-                'sender_balance': app.blockchain.get_balance(wallet.address)
+                'sender_balance': app.blockchain.get_balance(wallet.address),
+                'evm_tx_hash': evm_tx_hash,
+                'evm_credited_wei': evm_wei,
+                'evm_balance': (evm_engine.get_balance(receiver) if evm_tx_hash else None),
             }), 201
 
         except ValueError:

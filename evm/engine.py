@@ -92,6 +92,8 @@ class EVMEngine:
             EVM_DEV_PRIVATE_KEY[2:] if EVM_DEV_PRIVATE_KEY.startswith('0x')
             else EVM_DEV_PRIVATE_KEY))
         dev_address = '0x' + dev_priv.public_key.to_address()[2:]
+        # Endereço da reserva de demo (usado por depósitos nativo → EVM).
+        self.dev_address = to_checksum_address(dev_address)
         accounts.setdefault(dev_address, EVM_GENESIS_BALANCE_ETH)
         for address, balance_eth in accounts.items():
             genesis_state[_to_canonical(address)] = {
