@@ -5,6 +5,7 @@ import ChainGrowthChart from '../components/ChainGrowthChart';
 import MempoolWidget from '../components/MempoolWidget';
 import BlockCard from '../components/BlockCard';
 import StatCard from '../components/StatCard';
+import NextBlockCountdown from '../components/NextBlockCountdown';
 import LoadingSpinner from '../components/LoadingSpinner';
 import { getStats, getChartData, getChain, getMempoolStats, mineBlock } from '../api/client';
 import { useWallet } from '../context/WalletContext';
@@ -156,6 +157,10 @@ export default function Dashboard() {
               Execute Proof of Work para minerar um novo bloco.
             </p>
           </div>
+          <NextBlockCountdown
+            nextBlockAt={s.next_block_at}
+            targetBlockTime={s.target_block_time}
+          />
         </div>
 
         <div className="mt-3 sm:mt-4 flex flex-col sm:flex-row gap-3">

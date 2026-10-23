@@ -49,7 +49,7 @@ import os
 from config import (
     CORS_ORIGINS, CA_CERT_FILE, NODE_AUTH_HEADER, NETWORK_SECRET,
     SSL_CERT_DIR, P2P_SIGNATURE_HEADER, P2P_PUBKEY_HEADER,
-    P2P_REQUIRE_SIGNATURE
+    P2P_REQUIRE_SIGNATURE, TARGET_BLOCK_TIME
 )
 
 # ─── Suprime warnings SSL para certs auto-assinados (dev) ──────
@@ -968,6 +968,7 @@ Documentação completa dos endpoints e schemas.
             len(block.transactions) for block in app.blockchain.chain
         )
         supply = app.blockchain.get_supply_info()
+        last_block = app.blockchain.last_block
         return jsonify({
             'blocks': len(app.blockchain.chain),
             'total_transactions': total_tx,
@@ -978,7 +979,11 @@ Documentação completa dos endpoints e schemas.
             'miner_address': app.node_wallet_address,
             'peer_nodes': _get_node_urls(),
             'genesis_hash': app.blockchain.chain[0].hash if app.blockchain.chain else None,
-            'last_block_hash': app.blockchain.last_block.hash if app.blockchain.last_block else None,
+            'last_block_hash': last_block.hash if last_block else None,
+            # Ritmo de blocos (alvo do Bitcoin): o explorer conta até o próximo.
+            'last_block_timestamp': last_block.timestamp if last_block else None,
+            'target_block_time': TARGET_BLOCK_TIME,
+            'next_block_at': (last_block.timestamp + TARGET_BLOCK_TIME) if last_block else None,
             'chain_valid': app.blockchain.is_chain_valid(),
             'total_supply': supply['total_supply'],
             'supply_cap': supply['supply_cap'],

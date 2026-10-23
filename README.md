@@ -101,7 +101,7 @@ npm run dev
 O minerador busca um **nonce** tal que `SHA-256(bloco + nonce)` comece com N zeros:
 - Dificuldade 4 ≈ 65.536 tentativas em média
 - Dificuldade 5 ≈ 1.048.576 tentativas
-- Ajuste dinâmico a cada 10 blocos
+- Ajuste dinâmico a cada 10 blocos, com alvo de **10 min por bloco**
 
 **2. Assinaturas Digitais (ECDSA)**
 Usamos **ECDSA com curva secp256k1** (a mesma do Bitcoin):
@@ -120,13 +120,57 @@ Cada bloco contém uma raiz de Merkle que resume todas as transações, permitin
 **5. Consenso**
 A cadeia válida **mais longa** é a correta. Nós substituem sua cadeia local ao receber uma cadeia mais longa e válida.
 
+### ⛏️ Mineração automática (1 bloco a cada 10 min)
+
+O `miner.py` é o minerador da rede: com o nó rodando, ele chama `POST /mine`
+no ritmo de **um bloco a cada 10 minutos** — o mesmo alvo do Bitcoin. O
+intervalo vem de `TARGET_BLOCK_TIME` em `config.py`, e o ajuste de dificuldade
+usa esse mesmo alvo na janela de 10 blocos.
+
+```bash
+# Terminal 1 — o nó
+python run.py --load
+
+# Terminal 2 — o minerador (Ctrl+C para parar)
+python miner.py
+
+python miner.py --address 15ZK...        # recompensa para a sua carteira
+python miner.py --interval 30            # outro ritmo
+python miner.py --blocks 2 --interval 5  # teste rápido
+```
+
+O minerador não guarda uma cópia da cadeia: quem minera é o nó, então a
+mempool, a EVM e o explorer continuam com uma única fonte de verdade. Se o
+último bloco foi minerado há mais de 10 minutos, o bloco sai na hora e o
+próximo slot conta a partir dele.
+
+O nó salva a blockchain em `data/blockchain.json` **a cada bloco minerado**
+(escrita atômica), sem depender do Ctrl+C, e o Dashboard mostra a contagem
+para o próximo bloco.
+
+### 🪟 Minerador sempre rodando (Windows)
+
+Para o minerador subir junto com o Windows e se reiniciar sozinho, rode:
+
+```bat
+scripts\windows\install_miner_service.bat
+```
+
+O instalador registra `pythonw miner_service.py` no autostart do usuário
+(não precisa de administrador), já inicia agora e grava a saída em
+`data\miner_service.log`. Uma trava impede duas instâncias minerando. Para
+remover: `scripts\windows\uninstall_miner_service.bat`.
+
+O nó (`python run.py --load`) precisa estar rodando; sem ele o serviço
+apenas registra a falha e tenta de novo a cada 30s.
+
 ### 📊 Blockchain Explorer
 
 O frontend em React oferece 6 páginas para explorar a blockchain:
 
 | Página | Rota | Descrição |
 |--------|------|-----------|
-| **Dashboard** | `/` | Visão geral com gráficos e estatísticas |
+| **Dashboard** | `/` | Visão geral com gráficos, estatísticas e contagem para o próximo bloco |
 | **Explorer** | `/blocks` | Blocos em cards com paginação |
 | **Detalhes** | `/block/:id` | Hash, merkle, nonce, transações |
 | **Transações** | `/transactions` | Tabela com filtros e busca |

@@ -54,6 +54,14 @@ class TestAPIChain(unittest.TestCase):
         self.assertIn('node_id', data)
         self.assertIn('chain_valid', data)
         self.assertTrue(data['chain_valid'])
+        # Contagem para o próximo bloco (alvo de 10 min)
+        self.assertIn('last_block_timestamp', data)
+        self.assertIn('target_block_time', data)
+        self.assertIn('next_block_at', data)
+        self.assertAlmostEqual(
+            data['next_block_at'],
+            data['last_block_timestamp'] + data['target_block_time'],
+        )
 
     def test_get_validate(self):
         """GET /validate deve retornar validacao."""

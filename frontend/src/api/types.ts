@@ -44,6 +44,12 @@ export interface Stats {
   percent_mined: number;
   token_name: string;
   token_symbol: string;
+  /** Timestamp (s) do último bloco. */
+  last_block_timestamp?: number | null;
+  /** Alvo de segundos por bloco (600 = 10 min). */
+  target_block_time?: number;
+  /** Timestamp (s) em que o próximo bloco pode ser minerado. */
+  next_block_at?: number | null;
 }
 
 export interface MempoolStats {

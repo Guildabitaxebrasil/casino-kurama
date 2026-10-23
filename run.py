@@ -201,6 +201,17 @@ def run_single_node(args):
         print("[CHECK] Verificando integridade...")
         blockchain.is_chain_valid()
 
+    # ─── Autosave a cada bloco ──────────────────────────────────
+    # O minerador (miner.py) roda em outro processo: sem isso a cadeia só
+    # seria salva no Ctrl+C e um crash perderia todos os blocos novos.
+    def _autosave_block(block):
+        try:
+            blockchain.save_to_file(CHAIN_FILE)
+        except Exception as exc:
+            print(f"[WARN] Falha ao salvar blockchain no bloco #{block.index}: {exc}")
+
+    blockchain.on('on_block_mined', _autosave_block)
+
     # ─── HTTPS Setup ─────────────────────────────────────────────
     use_ssl = not args.no_ssl
     ssl_context = None

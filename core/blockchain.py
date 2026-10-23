@@ -18,7 +18,8 @@ from .transaction import Transaction
 from config import (
     INITIAL_BLOCK_REWARD, HALVING_INTERVAL, TOTAL_SUPPLY_CAP,
     MIN_TRANSACTION_AMOUNT, MIN_TRANSACTION_FEE, COINBASE_SENDER,
-    TOKEN_NAME, TOKEN_SYMBOL
+    TOKEN_NAME, TOKEN_SYMBOL,
+    DIFFICULTY_ADJUST_INTERVAL, TARGET_BLOCK_TIME
 )
 
 
@@ -374,24 +375,32 @@ class Blockchain:
     def adjust_difficulty(self):
         """
         Ajusta a dificuldade dinamicamente baseado no tempo de mineração.
-        A cada 10 blocos, recalcula. Este é um mecanismo simplificado
-        do algoritmo do Bitcoin que ajusta a cada 2016 blocos.
+        A cada `DIFFICULTY_ADJUST_INTERVAL` blocos (10), recalcula. Este é
+        um mecanismo simplificado do algoritmo do Bitcoin que ajusta a
+        cada 2016 blocos.
 
         THREAD-SAFE: protegido por _difficulty_lock para prevenir
         race conditions com recebimento de blocos via P2P.
 
-        A dificuldade aumenta se os blocos estão sendo minerados
-        rápido demais (>30s por bloco) e diminui se estão lentos (<5s).
+        O alvo é `TARGET_BLOCK_TIME` por bloco (600s = um bloco a cada
+        10 minutos), então a janela de retarget deve levar
+        `TARGET_BLOCK_TIME * DIFFICULTY_ADJUST_INTERVAL` segundos.
+        A dificuldade aumenta se a janela foi rápida demais (menos da
+        metade do alvo) e diminui se foi lenta demais (mais do dobro).
         """
         with self._difficulty_lock:
-            if len(self.chain) % 10 == 0 and len(self.chain) > 0:
-                # Pega o timestamp do bloco atual e do bloco 10 atrás
+            if len(self.chain) % DIFFICULTY_ADJUST_INTERVAL == 0 and len(self.chain) > 0:
+                # Pega o timestamp do bloco atual e do início da janela
                 last_block = self.chain[-1]
-                ten_blocks_ago = self.chain[-10] if len(self.chain) >= 10 else None
+                window_start = (self.chain[-DIFFICULTY_ADJUST_INTERVAL]
+                                if len(self.chain) >= DIFFICULTY_ADJUST_INTERVAL
+                                else None)
 
-                if ten_blocks_ago:
-                    time_span = last_block.timestamp - ten_blocks_ago.timestamp
-                    target_time = 300  # Esperado: 30s * 10 blocos = 300s
+                # O gênese tem timestamp 0; usá-lo como início da janela
+                # faria o primeiro retarget parecer "lento demais".
+                if window_start and window_start.index > 0:
+                    time_span = last_block.timestamp - window_start.timestamp
+                    target_time = TARGET_BLOCK_TIME * DIFFICULTY_ADJUST_INTERVAL
 
                     if time_span < target_time / 2:  # Muito rápido: aumenta dificuldade
                         self.difficulty += 1
@@ -942,8 +951,12 @@ class Blockchain:
             'node_id': self.node_id
         }
 
-        with open(filepath, 'w') as f:
+        # Escrita atômica: grava em um temporário e renomeia. Com autosave a
+        # cada bloco, um crash no meio do dump não pode corromper a cadeia.
+        tmp_path = f'{filepath}.tmp'
+        with open(tmp_path, 'w') as f:
             json.dump(data, f, indent=2)
+        os.replace(tmp_path, filepath)
 
         print(f"[SAVE] Blockchain salva em {filepath} "
               f"({len(self.chain)} blocos, "

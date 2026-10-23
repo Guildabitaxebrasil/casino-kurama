@@ -12,6 +12,7 @@ import os
 import unittest
 import json
 import tempfile
+import time
 
 # Adiciona o diretório raiz ao path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
@@ -21,6 +22,7 @@ from core.transaction import Transaction
 from core.wallet import Wallet
 from core.block import Block
 from core.blockchain import Blockchain
+from config import TARGET_BLOCK_TIME
 
 
 class TestCryptoUtils(unittest.TestCase):
@@ -441,6 +443,45 @@ class TestBlockchain(unittest.TestCase):
         # Ajusta - ainda não há blocos suficientes
         bc.adjust_difficulty()
         self.assertEqual(bc.difficulty, 2)
+
+    def _chain_with_spacing(self, spacing: float, blocks: int = 19) -> Blockchain:
+        """Blockchain com `blocks` blocos reais espaçados por `spacing` segundos."""
+        bc = Blockchain(difficulty=4)
+        timestamp = time.time() - spacing * blocks
+        for index in range(1, blocks + 1):
+            timestamp += spacing
+            bc.chain.append(Block(
+                index=index, transactions=[], proof=0,
+                previous_hash=bc.last_block.hash, timestamp=timestamp,
+                difficulty=bc.difficulty,
+            ))
+        return bc
+
+    def test_difficulty_stable_at_target_block_time(self):
+        """Janela de 10 blocos a 600s mantém a dificuldade (alvo de 10 min)."""
+        bc = self._chain_with_spacing(spacing=TARGET_BLOCK_TIME)
+        self.assertEqual(bc.difficulty, 4)
+
+        bc.adjust_difficulty()
+
+        self.assertEqual(bc.difficulty, 4)
+
+    def test_difficulty_ignores_genesis_timestamp(self):
+        """O gênese (timestamp 0) não conta como início da janela de retarget."""
+        bc = self._chain_with_spacing(spacing=TARGET_BLOCK_TIME, blocks=9)
+        self.assertEqual(len(bc.chain), 10)
+
+        bc.adjust_difficulty()
+
+        self.assertEqual(bc.difficulty, 4)
+
+    def test_difficulty_rises_when_window_is_fast(self):
+        """Janela bem mais rápida que o alvo aumenta a dificuldade."""
+        bc = self._chain_with_spacing(spacing=30)
+
+        bc.adjust_difficulty()
+
+        self.assertEqual(bc.difficulty, 5)
 
     def test_halving_reward(self):
         """Recompensa de bloco deve reduzir pela metade a cada halving."""

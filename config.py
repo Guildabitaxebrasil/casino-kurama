@@ -86,8 +86,11 @@ CHAIN_FILE = _env('CHAIN_FILE', 'data/blockchain.json')
 WALLET_FILE = _env('WALLET_FILE', 'data/wallet.json')
 
 # ─── Ajuste de Dificuldade ───────────────────────────────────────
+# Ritmo de blocos da rede, como o alvo de 10 minutos do Bitcoin.
+# O minerador automático (miner.py) usa este valor como intervalo entre
+# blocos e o ajuste de dificuldade usa como alvo da janela de retarget.
 DIFFICULTY_ADJUST_INTERVAL = 10  # A cada quantos blocos ajustar
-TARGET_BLOCK_TIME = 30.0       # Tempo alvo por bloco (segundos)
+TARGET_BLOCK_TIME = 600.0      # Tempo alvo por bloco (segundos) — 10 minutos
 
 # ─── Transações ──────────────────────────────────────────────────
 MAX_PENDING_TX = 100           # Máx. transações pendentes por bloco
