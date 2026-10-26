@@ -69,6 +69,27 @@ class TestCryptoUtils(unittest.TestCase):
         # Hash sem zeros no início
         self.assertFalse(CryptoUtils.is_hash_valid("abcd", 1))
 
+    def test_is_hash_valid_fractional_difficulty(self):
+        """A parte fracionária aperta o dígito seguinte ao último zero."""
+        hash_6a = '000000a' + 'f' * 57
+        self.assertTrue(CryptoUtils.is_hash_valid(hash_6a, 6))
+        self.assertTrue(CryptoUtils.is_hash_valid(hash_6a, 6.15))
+        self.assertFalse(CryptoUtils.is_hash_valid(hash_6a, 6.3))
+
+        hash_6f = '000000f' + 'f' * 57
+        self.assertTrue(CryptoUtils.is_hash_valid(hash_6f, 6))
+        self.assertFalse(CryptoUtils.is_hash_valid(hash_6f, 6.15))
+
+    def test_difficulty_digits(self):
+        """Dificuldade inteira usa teto 15; frações reduzem o teto."""
+        self.assertEqual(CryptoUtils.difficulty_digits(4), (4, 15))
+        self.assertEqual(CryptoUtils.difficulty_digits(4.25), (4, 7))
+        self.assertEqual(CryptoUtils.difficulty_digits(4.5), (4, 3))
+        # 1 zero a mais vale 16x mais trabalho
+        self.assertAlmostEqual(CryptoUtils.expected_hashes(4), 16 ** 4)
+        self.assertAlmostEqual(CryptoUtils.expected_hashes(4.5),
+                               16 ** 4 * 4)
+
     def test_generate_key_pair(self):
         """Geração de par de chaves deve funcionar."""
         priv, pub = CryptoUtils.generate_key_pair()
@@ -339,6 +360,15 @@ class TestBlockchain(unittest.TestCase):
             CryptoUtils.is_hash_valid(block_hash, self.bc.difficulty)
         )
 
+    def test_mine_block_with_fractional_difficulty(self):
+        """O retarget fino gera dificuldade quebrada: minerar e validar funciona."""
+        bc = Blockchain(difficulty=3.25)
+        block = bc.mine_block(Wallet().address)
+
+        self.assertIsNotNone(block)
+        self.assertEqual(block.difficulty, 3.25)
+        self.assertTrue(bc.is_chain_valid())
+
     def test_balance_calculation(self):
         """Cálculo de saldo deve funcionar com recompensa dinâmica."""
         alice = Wallet()
@@ -483,6 +513,26 @@ class TestBlockchain(unittest.TestCase):
 
         self.assertEqual(bc.difficulty, 5)
 
+    def test_difficulty_adjusts_proportionally(self):
+        """Blocos a ~6 min sobem a dificuldade na medida certa para 10 min.
+
+        O passo é log16(alvo / real): sem ele, a dificuldade só andava de
+        16 em 16x e o alvo de 10 minutos nunca ficava perto.
+        """
+        bc = self._chain_with_spacing(spacing=373)
+
+        bc.adjust_difficulty()
+
+        self.assertAlmostEqual(bc.difficulty, 4.171, places=3)
+
+    def test_difficulty_jump_is_limited_per_window(self):
+        """Uma janela absurda não joga a dificuldade para o outro extremo."""
+        bc = self._chain_with_spacing(spacing=1)
+
+        bc.adjust_difficulty()
+
+        self.assertEqual(bc.difficulty, 5)
+
     def test_halving_reward(self):
         """Recompensa de bloco deve reduzir pela metade a cada halving."""
         bc = Blockchain(difficulty=2)
@@ -561,6 +611,127 @@ class TestBlockchain(unittest.TestCase):
         # Miner: saldo anterior + coinbase #2 (2500) - 100 enviado
         expected = miner_balance_before + self.bc.get_block_reward(2) - 100.0
         self.assertEqual(self.bc.get_balance(miner.address), expected)
+
+
+class TestExternalMining(unittest.TestCase):
+    """
+    Mineração externa (minerador na CPU): o nó entrega o template,
+    o minerador acha o nonce e o nó valida o bloco pronto.
+    """
+
+    def setUp(self):
+        self.bc = Blockchain(difficulty=2)
+        self.miner = Wallet()
+
+    @staticmethod
+    def _solve(template):
+        """Resolve o PoW fora do nó, como o minerador faz."""
+        fields = ('index', 'timestamp', 'transactions', 'proof',
+                  'previous_hash', 'merkle_root')
+        proof = 0
+        while True:
+            block = {k: template[k] for k in fields}
+            block['proof'] = proof
+            hash_value = CryptoUtils.hash_block(block)
+            if CryptoUtils.is_hash_valid(hash_value, template['difficulty']):
+                block['hash'] = hash_value
+                return block
+            proof += 1
+
+    def test_template_does_not_change_the_chain(self):
+        """Pedir template não minera nada: a cadeia fica igual."""
+        before = len(self.bc.chain)
+        self.bc.create_mining_template(self.miner.address)
+        self.assertEqual(len(self.bc.chain), before)
+
+    def test_template_fits_the_chain_tip(self):
+        template = self.bc.create_mining_template(self.miner.address)
+
+        self.assertEqual(template['index'], len(self.bc.chain))
+        self.assertEqual(template['previous_hash'], self.bc.last_block.hash)
+        self.assertEqual(template['difficulty'], self.bc.difficulty)
+        self.assertEqual(template['proof'], 0)
+        self.assertEqual(template['transactions'][0]['sender'], '0')
+        self.assertEqual(template['transactions'][0]['receiver'],
+                         self.miner.address)
+        self.assertEqual(
+            template['merkle_root'],
+            CryptoUtils.merkle_root(template['transactions']))
+
+    def test_submit_solved_block(self):
+        template = self.bc.create_mining_template(self.miner.address)
+        block = self.bc.submit_mined_block(self._solve(template))
+
+        self.assertEqual(block.index, template['index'])
+        self.assertEqual(len(self.bc.chain), template['index'] + 1)
+        self.assertEqual(self.bc.chain[-1].hash, block.hash)
+        self.assertGreater(self.bc.get_balance(self.miner.address), 0)
+        self.assertTrue(self.bc.is_chain_valid())
+
+    def test_submit_rejects_invalid_proof_of_work(self):
+        """Bloco sem PoW válido não entra (nada de minerar de graça)."""
+        template = self.bc.create_mining_template(self.miner.address)
+        template['proof'] = 0
+
+        with self.assertRaises(ValueError):
+            self.bc.submit_mined_block(template)
+        self.assertEqual(len(self.bc.chain), 1)
+
+    def test_submit_rejects_stale_timestamp(self):
+        """Bloco com timestamp velho demais não entra (distorceria o retarget)."""
+        from config import MIN_TIMESTAMP_AGE
+
+        template = self.bc.create_mining_template(self.miner.address)
+        template['timestamp'] = time.time() - MIN_TIMESTAMP_AGE - 60
+
+        with self.assertRaises(ValueError) as ctx:
+            self.bc.submit_mined_block(self._solve(template))
+        self.assertIn('Timestamp', str(ctx.exception))
+        self.assertEqual(len(self.bc.chain), 1)
+
+    def test_submit_rejects_wrong_previous_hash(self):
+        template = self.bc.create_mining_template(self.miner.address)
+        block = self._solve(template)
+        block['previous_hash'] = 'f' * 64
+
+        with self.assertRaises(ValueError) as ctx:
+            self.bc.submit_mined_block(block)
+        self.assertIn('previous_hash', str(ctx.exception))
+
+    def test_submit_rejects_inflated_coinbase(self):
+        template = self.bc.create_mining_template(self.miner.address)
+        template['transactions'][0] = {
+            **template['transactions'][0],
+            'amount': template['reward'] * 10,
+        }
+        template['merkle_root'] = CryptoUtils.merkle_root(
+            template['transactions'])
+
+        with self.assertRaises(ValueError) as ctx:
+            self.bc.submit_mined_block(self._solve(template))
+        self.assertIn('Coinbase', str(ctx.exception))
+
+    def test_submit_removes_mined_transactions_from_mempool(self):
+        sender = Wallet()
+        tx = sender.create_transaction(self.miner.address, 1.0)
+        self.bc.pending_transactions.append(tx)
+
+        template = self.bc.create_mining_template(self.miner.address)
+        self.assertEqual(len(template['transactions']), 2)  # coinbase + tx
+
+        self.bc.submit_mined_block(self._solve(template))
+
+        self.assertEqual(self.bc.pending_transactions, [])
+        self.assertGreaterEqual(self.bc.get_balance(self.miner.address), 1.0)
+
+    def test_submit_rejects_stale_template(self):
+        """Template usado duas vezes (outro bloco entrou) é rejeitado."""
+        template = self.bc.create_mining_template(self.miner.address)
+        block = self._solve(template)
+        self.bc.submit_mined_block(block)
+
+        with self.assertRaises(ValueError):
+            self.bc.submit_mined_block(block)
 
 
 class TestFullIntegration(unittest.TestCase):

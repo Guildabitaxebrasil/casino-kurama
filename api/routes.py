@@ -125,6 +125,12 @@ class AdvancedRateLimiter:
 
 rate_limiter = AdvancedRateLimiter(max_requests=60, window_seconds=60)
 
+# Mineração externa tem cota própria. O minerador faz duas requisições por
+# bloco (template + submit); no limite global de 60/min ele seria bloqueado
+# depois de ~30 blocos. Continua limitado (cliente abusivo é barrado), mas
+# com folga para minerar no ritmo da rede.
+mining_rate_limiter = AdvancedRateLimiter(max_requests=600, window_seconds=60)
+
 
 # ─── SSE Event Manager ────────────────────────────────────────────
 # Gerencia assinantes de eventos Server-Sent Events (SSE).
@@ -352,6 +358,39 @@ def rate_limit(f):
             response.headers['X-RateLimit-Limit'] = str(rate_limiter.max_requests)
             response.headers['X-RateLimit-Window'] = str(rate_limiter.window_seconds)
             response.headers['X-RateLimit-Policy'] = 'ip;w=' + str(rate_limiter.window_seconds)
+
+        return response
+    return decorated
+
+
+def rate_limit_mining(f):
+    """Rate limit das rotas de mineração externa (/mining/*).
+
+    Usa a cota de mineração em vez da global: sem isso o próprio minerador
+    toma 429 ao emendar blocos (2 requisições por bloco). Os headers
+    X-RateLimit-* continuam anunciando o limite aplicado.
+    """
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        ip = _get_client_ip()
+        if not mining_rate_limiter.is_allowed(ip):
+            return jsonify({
+                'error': 'Muitas requisições de mineração. Aguarde e tente novamente.',
+                'retry_after': 60
+            }), 429
+
+        try:
+            response = f(*args, **kwargs)
+        except Exception as e:
+            mining_rate_limiter.register_rejection(ip)
+            raise e
+
+        if isinstance(response, tuple):
+            response = _flask_make_response(response)
+        if hasattr(response, 'headers'):
+            response.headers['X-RateLimit-Limit'] = str(mining_rate_limiter.max_requests)
+            response.headers['X-RateLimit-Window'] = str(mining_rate_limiter.window_seconds)
+            response.headers['X-RateLimit-Policy'] = 'ip;w=' + str(mining_rate_limiter.window_seconds)
 
         return response
     return decorated
@@ -617,6 +656,93 @@ Documentação completa dos endpoints e schemas.
             'pending': len(app.blockchain.pending_transactions)
         })
         return jsonify(response), 200
+
+    # ─── Mineração externa (PoW feito pelo minerador) ────────────
+
+    @app.route('/mining/template', methods=['GET'])
+    @rate_limit_mining
+    def mining_template():
+        """
+        Entrega o bloco candidato para o minerador resolver o PoW.
+
+        Query string:
+            address: endereço que recebe a recompensa (padrão: do nó)
+
+        O minerador recebe a altura, o hash anterior, a dificuldade e as
+        transações (coinbase + mempool), procura o nonce na CPU dele e
+        devolve o bloco pronto em POST /mining/submit.
+        """
+        miner_address = request.args.get('address') or app.node_wallet_address
+
+        if miner_address != app.node_wallet_address:
+            if not CryptoUtils.is_valid_address(miner_address):
+                return jsonify({
+                    'error': f'Endereço de minerador inválido: {miner_address[:30]}...',
+                    'hint': 'Informe um endereço Base58 Kurama válido.'
+                }), 400
+
+        template = app.blockchain.create_mining_template(miner_address)
+        return jsonify(template), 200
+
+    @app.route('/mining/submit', methods=['POST'])
+    @rate_limit_mining
+    def mining_submit():
+        """
+        Recebe o bloco já minerado por um minerador externo.
+
+        Body (JSON): o template devolvido por /mining/template com o
+        campo `proof` preenchido pelo minerador.
+
+        Valida altura, previous_hash, dificuldade, PoW, merkle root,
+        assinaturas e coinbase antes de aceitar o bloco.
+        """
+        data = request.get_json(silent=True)
+
+        if not data or not isinstance(data, dict):
+            return jsonify({'error': 'Bloco não fornecido'}), 400
+
+        try:
+            block = app.blockchain.submit_mined_block(data)
+        except (KeyError, TypeError, AttributeError, IndexError) as exc:
+            # Corpo que nem é um bloco (campo faltando, tipo errado) não é
+            # template velho: é requisição inválida, não 500.
+            return jsonify({
+                'error': f'Bloco malformado: {exc}',
+                'hint': 'Envie o bloco completo de GET /mining/template, '
+                        'com o campo proof resolvido.',
+            }), 400
+        except ValueError as exc:
+            return jsonify({
+                'error': str(exc),
+                'hint': 'Peça um novo template em GET /mining/template.'
+            }), 409
+
+        coinbase = block.transactions[0] if block.transactions else None
+        total_reward = coinbase.amount if coinbase else 0
+        base_reward = app.blockchain.get_block_reward(block.index)
+        miner_address = coinbase.receiver if coinbase else app.node_wallet_address
+
+        sse_manager.publish('chain_updated', {
+            'block_index': block.index,
+            'block_hash': block.hash,
+            'blocks': len(app.blockchain.chain),
+            'miner_address': miner_address
+        })
+        sse_manager.publish('mempool_updated', {
+            'pending': len(app.blockchain.pending_transactions)
+        })
+
+        return jsonify({
+            'message': 'Bloco minerado aceito!',
+            'block': block.to_dict(),
+            'base_reward': base_reward,
+            'fee_reward': max(0.0, total_reward - base_reward),
+            'total_reward': total_reward,
+            'miner_address': miner_address,
+            'miner_balance': app.blockchain.get_balance(miner_address),
+            'difficulty': app.blockchain.difficulty,
+            'supply': app.blockchain.get_supply_info()
+        }), 200
 
     @app.route('/transactions/new', methods=['POST'])
     @rate_limit

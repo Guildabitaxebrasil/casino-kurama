@@ -15,6 +15,8 @@ import json
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from api.routes import create_app
+from core.blockchain import Blockchain
+from core.crypto_utils import CryptoUtils
 from core.wallet import Wallet
 
 
@@ -130,6 +132,118 @@ class TestAPIMining(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         data = resp.get_json()
         self.assertIn('block', data)
+
+
+class TestAPIExternalMining(unittest.TestCase):
+    """Endpoints da mineracao externa (/mining/template, /mining/submit)."""
+
+    @classmethod
+    def setUpClass(cls):
+        # Dificuldade 2 mantem o PoW dos testes rapido.
+        cls.app = create_app(blockchain=Blockchain(difficulty=2), port=5000)
+        cls.client = cls.app.test_client()
+        cls.miner = Wallet()
+
+    @staticmethod
+    def _solve(template):
+        fields = ('index', 'timestamp', 'transactions', 'proof',
+                  'previous_hash', 'merkle_root')
+        proof = 0
+        while True:
+            block = {k: template[k] for k in fields}
+            block['proof'] = proof
+            hash_value = CryptoUtils.hash_block(block)
+            if CryptoUtils.is_hash_valid(hash_value, template['difficulty']):
+                block['hash'] = hash_value
+                block['difficulty'] = template['difficulty']
+                return block
+            proof += 1
+
+    def test_mining_template(self):
+        """GET /mining/template entrega o bloco candidato."""
+        resp = self.client.get(
+            f'/mining/template?address={self.miner.address}')
+        self.assertEqual(resp.status_code, 200)
+
+        data = resp.get_json()
+        self.assertEqual(data['miner_address'], self.miner.address)
+        self.assertEqual(data['transactions'][0]['receiver'],
+                         self.miner.address)
+        self.assertIn('previous_hash', data)
+        self.assertIn('merkle_root', data)
+        self.assertIn('difficulty', data)
+        self.assertGreater(data['reward'], 0)
+
+    def test_mining_template_invalid_address(self):
+        resp = self.client.get('/mining/template?address=endereco_invalido')
+        self.assertEqual(resp.status_code, 400)
+
+    def test_mining_uses_its_own_rate_limit(self):
+        """O minerador faz 2 req/bloco e não pode tomar 429 do limite global."""
+        responses = [
+            self.client.get(f'/mining/template?address={self.miner.address}')
+            for _ in range(70)
+        ]
+        codes = {resp.status_code for resp in responses}
+        self.assertEqual(codes, {200})
+        # A cota de mineração é anunciada nos headers, não a global.
+        self.assertEqual(responses[-1].headers['X-RateLimit-Limit'], '600')
+
+    def test_mining_submit_solved_block(self):
+        """POST /mining/submit aceita o bloco minerado na CPU."""
+        chain_before = self.client.get('/chain').get_json()['length']
+
+        template = self.client.get(
+            f'/mining/template?address={self.miner.address}').get_json()
+        block = self._solve(template)
+
+        resp = self.client.post('/mining/submit', json=block)
+        self.assertEqual(resp.status_code, 200)
+
+        data = resp.get_json()
+        self.assertEqual(data['miner_address'], self.miner.address)
+        self.assertEqual(data['block']['index'], chain_before)
+        self.assertGreater(data['total_reward'], 0)
+        self.assertGreaterEqual(data['miner_balance'], 0)
+
+        self.assertEqual(
+            self.client.get('/chain').get_json()['length'],
+            chain_before + 1)
+
+    def test_mining_submit_rejects_unsolved_block(self):
+        """Sem PoW o bloco é recusado com 409."""
+        chain_before = self.client.get('/chain').get_json()['length']
+        template = self.client.get(
+            f'/mining/template?address={self.miner.address}').get_json()
+        template['proof'] = 0
+
+        resp = self.client.post('/mining/submit', json=template)
+        self.assertEqual(resp.status_code, 409)
+        self.assertIn('error', resp.get_json())
+        self.assertEqual(
+            self.client.get('/chain').get_json()['length'], chain_before)
+
+    def test_mining_submit_without_body(self):
+        resp = self.client.post('/mining/submit', json={})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_mining_submit_malformed_block_is_not_500(self):
+        """Corpo que não é um bloco vira 4xx (400 ao parsear), nunca 500."""
+        cases = [
+            [],
+            ['nao', 'e', 'bloco'],
+            {'index': 1},                                  # sem proof
+            {'index': 1, 'proof': 'abc', 'transactions': []},
+            {'index': 1, 'transactions': 'x'},             # txs não é lista
+            {'index': 1, 'transactions': ['x']},           # tx não é dict
+            {'index': 1, 'transactions': None, 'previous_hash': None,
+             'proof': 0},
+        ]
+        for body in cases:
+            with self.subTest(body=body):
+                resp = self.client.post('/mining/submit', json=body)
+                self.assertIn(resp.status_code, (400, 409), msg=body)
+                self.assertIn('error', resp.get_json())
 
 
 class TestAPITransactions(unittest.TestCase):

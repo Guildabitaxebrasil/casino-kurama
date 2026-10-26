@@ -98,10 +98,18 @@ npm run dev
 ### 🔬 Como Funciona
 
 **1. Proof of Work (Mineração)**
-O minerador busca um **nonce** tal que `SHA-256(bloco + nonce)` comece com N zeros:
+O minerador busca um **nonce** tal que `SHA-256(bloco + nonce)` comece com N zeros
+hexadecimais — cada zero multiplica o trabalho por 16:
 - Dificuldade 4 ≈ 65.536 tentativas em média
 - Dificuldade 5 ≈ 1.048.576 tentativas
-- Ajuste dinâmico a cada 10 blocos, com alvo de **10 min por bloco**
+- Dificuldade 6 ≈ 16,7 milhões de tentativas
+- A dificuldade é **fracionária**: `6.15` significa 6 zeros e o dígito seguinte
+  ≤ `a`. Isso dá degraus de ~1,19x; com zeros inteiros os degraus eram de 16x
+  (6 zeros ≈ 6 min e 7 zeros ≈ 100 min numa CPU doméstica), grosso demais
+  para mirar o alvo
+- Reajuste a cada 10 blocos, **proporcional** ao tempo real da janela
+  (`delta = log16(alvo / real)`), com alvo de **10 min por bloco** e salto
+  máximo de 1 por janela
 
 **2. Assinaturas Digitais (ECDSA)**
 Usamos **ECDSA com curva secp256k1** (a mesma do Bitcoin):
@@ -120,12 +128,13 @@ Cada bloco contém uma raiz de Merkle que resume todas as transações, permitin
 **5. Consenso**
 A cadeia válida **mais longa** é a correta. Nós substituem sua cadeia local ao receber uma cadeia mais longa e válida.
 
-### ⛏️ Mineração automática (1 bloco a cada 10 min)
+### ⛏️ Mineração na CPU (Proof of Work fora do nó)
 
-O `miner.py` é o minerador da rede: com o nó rodando, ele chama `POST /mine`
-no ritmo de **um bloco a cada 10 minutos** — o mesmo alvo do Bitcoin. O
-intervalo vem de `TARGET_BLOCK_TIME` em `config.py`, e o ajuste de dificuldade
-usa esse mesmo alvo na janela de 10 blocos.
+Quem faz o PoW é o `miner.py`, como no Bitcoin: o nó só entrega o bloco
+candidato (`GET /mining/template`) e valida o bloco pronto
+(`POST /mining/submit`). O minerador procura o nonce na CPU até o hash
+começar com os zeros exigidos pela dificuldade e emenda no bloco seguinte —
+não há contador nem "próximo bloco agendado": você mina sem parar.
 
 ```bash
 # Terminal 1 — o nó
@@ -135,18 +144,52 @@ python run.py --load
 python miner.py
 
 python miner.py --address 15ZK...        # recompensa para a sua carteira
-python miner.py --interval 30            # outro ritmo
-python miner.py --blocks 2 --interval 5  # teste rápido
+python miner.py --blocks 2               # minera 2 blocos e sai (teste)
+python miner.py --url http://meu-no:5000 # nó em outro endereço
 ```
 
-O minerador não guarda uma cópia da cadeia: quem minera é o nó, então a
-mempool, a EVM e o explorer continuam com uma única fonte de verdade. Se o
-último bloco foi minerado há mais de 10 minutos, o bloco sai na hora e o
-próximo slot conta a partir dele.
+O ritmo vem da dificuldade: o nó reajusta a cada 10 blocos mirando
+`TARGET_BLOCK_TIME` (10 min) e, se ninguém minerar, o próximo bloco
+simplesmente espera. Durante o PoW o minerador imprime o hashrate a cada 10s.
 
-O nó salva a blockchain em `data/blockchain.json` **a cada bloco minerado**
-(escrita atômica), sem depender do Ctrl+C, e o Dashboard mostra a contagem
-para o próximo bloco.
+A dificuldade fica salva em `data/blockchain.json` e é mantida ao reiniciar
+com `--load`: com `python run.py --load` ela continua de onde parou (só muda
+se você passar `--difficulty`, que aceita fração, ex.: `--difficulty 6.15`).
+Nó e minerador precisam estar na **mesma versão** — um minerador antigo não
+reconhece dificuldade fracionária e tem os blocos recusados.
+
+O nó valida tudo o que chega: PoW válido, `previous_hash` no topo da cadeia,
+coinbase do tamanho exato da recompensa + fees e raiz de Merkle. Template
+velho (outro bloco entrou) volta `409` e o minerador pede outro sozinho.
+
+O nó salva a blockchain em `data/blockchain.json` **a cada bloco aceito**
+(escrita atômica), sem depender do Ctrl+C.
+
+### ⬇️ Baixar o minerador (sem clonar o projeto)
+
+O `baixar_minerador.bat` baixa o `miner.py` mais recente do GitHub para
+`%USERPROFILE%\KuramaMiner`, cria o ambiente Python (com `requests`) e já
+começa a minerar — sem precisar do resto do repositório:
+
+```bat
+:: já dentro do repositório
+baixar_minerador.bat
+
+:: ou baixe e rode com um comando só (PowerShell)
+powershell -c "irm https://raw.githubusercontent.com/Guildabitaxebrasil/casino-kurama/main/baixar_minerador.bat -OutFile baixar_minerador.bat; .\baixar_minerador.bat"
+```
+
+Parâmetros (opcionais):
+
+```bat
+baixar_minerador.bat                             :: nó em http://127.0.0.1:5000
+baixar_minerador.bat http://meu-no:5000          :: nó em outro endereço
+baixar_minerador.bat http://meu-no:5000 15ZK...  :: recompensa para uma carteira
+```
+
+Requer Python 3.10+ instalado (o script avisa se não encontrar). O minerador
+baixado roda sozinho: quando o projeto não está por perto, usa a porta 5000
+como padrão (a mesma de `config.py`).
 
 ### 🪟 Minerador sempre rodando (Windows)
 
@@ -170,7 +213,7 @@ O frontend em React oferece 6 páginas para explorar a blockchain:
 
 | Página | Rota | Descrição |
 |--------|------|-----------|
-| **Dashboard** | `/` | Visão geral com gráficos, estatísticas e contagem para o próximo bloco |
+| **Dashboard** | `/` | Visão geral com gráficos, estatísticas e últimos blocos |
 | **Explorer** | `/blocks` | Blocos em cards com paginação |
 | **Detalhes** | `/block/:id` | Hash, merkle, nonce, transações |
 | **Transações** | `/transactions` | Tabela com filtros e busca |
@@ -354,7 +397,9 @@ relayer.process()                                        # origem → destino
 | Método | Rota | Descrição |
 |--------|------|-----------|
 | `GET` | `/chain` | Blockchain completa |
-| `POST` | `/mine` | Minerar novo bloco |
+| `POST` | `/mine` | Minerar novo bloco (PoW no próprio nó) |
+| `GET` | `/mining/template` | Bloco candidato para minerar fora do nó |
+| `POST` | `/mining/submit` | Aceitar bloco com o PoW resolvido na CPU |
 | `POST` | `/transactions/new` | Criar transação |
 | `GET` | `/transactions/pending` | Transações pendentes |
 | `POST` | `/wallet/new` | Gerar carteira |
@@ -468,6 +513,7 @@ python -m pytest tests/ -v
 python -m pytest tests/test_blockchain.py -v    # Blockchain
 python -m pytest tests/test_lightning.py -v     # Lightning Network
 python -m pytest tests/test_api.py -v           # API
+python -m pytest tests/test_miner.py -v         # Minerador (PoW na CPU + template/submit)
 python -m pytest tests/test_evm.py -v           # EVM + ERC-20 + JSON-RPC
 python -m pytest tests/test_dex.py -v           # DEX (AMM x*y=k + LP tokens)
 python -m pytest tests/test_oracle.py -v        # Oráculo (feed + TWAP)

@@ -7,6 +7,7 @@ A blockchain é um livro-razão (ledger) distribuído e imutável
 onde cada bloco é ligado criptograficamente ao anterior.
 """
 import json
+import math
 import time
 import os
 import threading
@@ -19,7 +20,7 @@ from config import (
     INITIAL_BLOCK_REWARD, HALVING_INTERVAL, TOTAL_SUPPLY_CAP,
     MIN_TRANSACTION_AMOUNT, MIN_TRANSACTION_FEE, COINBASE_SENDER,
     TOKEN_NAME, TOKEN_SYMBOL,
-    DIFFICULTY_ADJUST_INTERVAL, TARGET_BLOCK_TIME
+    DIFFICULTY_ADJUST_INTERVAL, TARGET_BLOCK_TIME, MAX_DIFFICULTY_JUMP
 )
 
 
@@ -374,38 +375,53 @@ class Blockchain:
 
     def adjust_difficulty(self):
         """
-        Ajusta a dificuldade dinamicamente baseado no tempo de mineração.
-        A cada `DIFFICULTY_ADJUST_INTERVAL` blocos (10), recalcula. Este é
-        um mecanismo simplificado do algoritmo do Bitcoin que ajusta a
-        cada 2016 blocos.
+        Reajusta a dificuldade para que os blocos saiam perto do alvo.
+
+        A cada `DIFFICULTY_ADJUST_INTERVAL` blocos (10) compara o tempo
+        real da janela com `TARGET_BLOCK_TIME` (600s = um bloco a cada
+        10 minutos) e aplica um passo PROPORCIONAL:
+
+            delta = log16(alvo / real)
+
+        Se a janela saiu 2x mais rápida que o alvo, a dificuldade sobe
+        0,25 (2x mais trabalho); se saiu 2x mais lenta, desce 0,25.
+        Como a dificuldade é fracionária (ver CryptoUtils.difficulty_digits),
+        isso ajusta fino em vez de pular 16x de uma vez — com passo
+        inteiro a cadeia oscilava entre 6 minutos e 100 minutos por bloco.
+
+        O salto é limitado a MAX_DIFFICULTY_JUMP por janela para que uma
+        janela atípica (máquina ligada em rajada, nó parado) não jogue a
+        dificuldade para o outro extremo.
 
         THREAD-SAFE: protegido por _difficulty_lock para prevenir
         race conditions com recebimento de blocos via P2P.
-
-        O alvo é `TARGET_BLOCK_TIME` por bloco (600s = um bloco a cada
-        10 minutos), então a janela de retarget deve levar
-        `TARGET_BLOCK_TIME * DIFFICULTY_ADJUST_INTERVAL` segundos.
-        A dificuldade aumenta se a janela foi rápida demais (menos da
-        metade do alvo) e diminui se foi lenta demais (mais do dobro).
         """
         with self._difficulty_lock:
-            if len(self.chain) % DIFFICULTY_ADJUST_INTERVAL == 0 and len(self.chain) > 0:
-                # Pega o timestamp do bloco atual e do início da janela
-                last_block = self.chain[-1]
-                window_start = (self.chain[-DIFFICULTY_ADJUST_INTERVAL]
-                                if len(self.chain) >= DIFFICULTY_ADJUST_INTERVAL
-                                else None)
+            interval = DIFFICULTY_ADJUST_INTERVAL
+            if interval <= 0 or len(self.chain) < interval:
+                return
+            if len(self.chain) % interval != 0:
+                return
 
-                # O gênese tem timestamp 0; usá-lo como início da janela
-                # faria o primeiro retarget parecer "lento demais".
-                if window_start and window_start.index > 0:
-                    time_span = last_block.timestamp - window_start.timestamp
-                    target_time = TARGET_BLOCK_TIME * DIFFICULTY_ADJUST_INTERVAL
+            last_block = self.chain[-1]
+            window_start = self.chain[-interval]
 
-                    if time_span < target_time / 2:  # Muito rápido: aumenta dificuldade
-                        self.difficulty += 1
-                    elif time_span > target_time * 2:  # Muito lento: diminui
-                        self.difficulty = max(1, self.difficulty - 1)
+            # O gênese tem timestamp 0; usá-lo como início da janela
+            # faria o primeiro retarget parecer "lento demais".
+            if window_start.index == 0:
+                return
+
+            time_span = last_block.timestamp - window_start.timestamp
+            if time_span <= 0:
+                return
+
+            # `interval` blocos formam `interval - 1` intervalos de tempo.
+            target_time = TARGET_BLOCK_TIME * (interval - 1)
+
+            delta = math.log(target_time / time_span, 16)
+            delta = max(-MAX_DIFFICULTY_JUMP, min(MAX_DIFFICULTY_JUMP, delta))
+
+            self.difficulty = max(1.0, round(self.difficulty + delta, 3))
 
     # ─── Recompensa e Halving ──────────────────────────────────────
 
@@ -724,6 +740,196 @@ class Blockchain:
 
         return block
 
+    # ─── Mineração externa (PoW feito pelo minerador) ────────────
+
+    def create_mining_template(self, miner_address: str) -> dict:
+        """
+        Monta o bloco candidato que um minerador externo vai resolver.
+
+        O nó não faz trabalho nenhum aqui: entrega a altura, o hash
+        anterior, a dificuldade e as transações (coinbase + mempool)
+        para o minerador procurar o nonce na CPU dele, como no Bitcoin
+        e no Monero. O bloco pronto volta por `submit_mined_block()`.
+
+        Args:
+            miner_address: Endereço que recebe a coinbase
+
+        Returns:
+            Dicionário do bloco candidato (proof = 0) + metadados
+        """
+        with self._mempool_lock:
+            new_index = len(self.chain)
+            previous_hash = self.last_block.hash if self.last_block else '0' * 64
+            base_reward = self.get_block_reward(new_index)
+            total_fees = sum(
+                getattr(tx, 'fee', 0.0) for tx in self.pending_transactions
+            )
+
+            total_reward = base_reward + total_fees
+            current_supply = self.get_total_supply()
+            if current_supply + total_reward > TOTAL_SUPPLY_CAP:
+                total_reward = max(total_fees, TOTAL_SUPPLY_CAP - current_supply)
+
+            reward_tx = Transaction(
+                sender=COINBASE_SENDER, receiver=miner_address,
+                amount=total_reward, timestamp=time.time()
+            )
+            template_txs = [reward_tx] + list(self.pending_transactions)
+
+        tx_dicts = [tx.to_dict() for tx in template_txs]
+
+        return {
+            # Campos que entram no hash do bloco
+            'index': new_index,
+            'timestamp': time.time(),
+            'transactions': tx_dicts,
+            'proof': 0,
+            'previous_hash': previous_hash,
+            'merkle_root': CryptoUtils.merkle_root(tx_dicts),
+            # Metadados (não entram no hash)
+            'difficulty': self.difficulty,
+            'miner_address': miner_address,
+            'reward': total_reward,
+            'base_reward': base_reward,
+            'fee_reward': total_fees,
+        }
+
+    def submit_mined_block(self, block_data: dict) -> Block:
+        """
+        Aceita um bloco cujo Proof of Work foi resolvido pelo minerador.
+
+        Valida tudo o que o nó validaria se tivesse minerado: altura,
+        ligação com o topo da cadeia, dificuldade atual, nonce (PoW),
+        merkle root, assinaturas, coinbase e mempool. Só depois entra
+        na cadeia.
+
+        Args:
+            block_data: Bloco devolvido pelo minerador
+
+        Returns:
+            O bloco validado e adicionado à cadeia
+
+        Raises:
+            ValueError: Se o bloco não é válido
+        """
+        with self._mining_lock:
+            block = Block.from_dict(block_data, Transaction)
+
+            # ─── Encaixe na cadeia ─────────────────────────────
+            if block.index != len(self.chain):
+                raise ValueError(
+                    f'Bloco fora de ordem: esperado #{len(self.chain)}, '
+                    f'recebido #{block.index}'
+                )
+
+            last = self.last_block
+            if last and block.previous_hash != last.hash:
+                raise ValueError('previous_hash não corresponde ao topo da cadeia')
+
+            # ─── Dificuldade ───────────────────────────────────
+            if block.difficulty is not None and abs(
+                    float(block.difficulty) - float(self.difficulty)) > 1e-6:
+                raise ValueError(
+                    f'Dificuldade do bloco ({block.difficulty}) difere da '
+                    f'atual ({self.difficulty})'
+                )
+
+            # ─── Timestamp ─────────────────────────────────────
+            # Quem escolhe o timestamp é o minerador, então o nó impõe a
+            # mesma janela do consenso: um bloco antigo distorceria o
+            # reajuste de dificuldade (faria a janela parecer lenta).
+            if not self._validate_timestamp(block.timestamp):
+                raise ValueError(
+                    'Timestamp do bloco fora da janela aceita; '
+                    'peça um novo template'
+                )
+
+            # ─── Hash e Proof of Work ──────────────────────────
+            calculated = block.calculate_hash()
+            if block.hash and block.hash != calculated:
+                raise ValueError('Hash do bloco não corresponde ao conteúdo')
+            if not CryptoUtils.is_hash_valid(calculated, self.difficulty):
+                raise ValueError(
+                    f'Proof of Work inválido: o hash não atende à '
+                    f'dificuldade {self.difficulty}'
+                )
+
+            # ─── Merkle root ───────────────────────────────────
+            tx_dicts = [
+                tx.to_dict() if hasattr(tx, 'to_dict') else tx
+                for tx in block.transactions
+            ]
+            if block.merkle_root != CryptoUtils.merkle_root(tx_dicts):
+                raise ValueError('Merkle root não corresponde às transações')
+
+            # ─── Transações ────────────────────────────────────
+            if not block.is_valid_transactions():
+                raise ValueError('Transações do bloco inválidas')
+
+            coinbase = block.transactions[0]
+            if coinbase.receiver is None:
+                raise ValueError('Coinbase sem destinatário')
+
+            with self._mempool_lock:
+                pending_ids = {tx.transaction_id for tx in self.pending_transactions}
+
+            base_reward = self.get_block_reward(block.index)
+            miner_fees = sum(getattr(tx, 'fee', 0.0)
+                             for tx in block.transactions[1:])
+            max_reward = base_reward + miner_fees
+            if coinbase.amount > max_reward + 1e-9:
+                raise ValueError(
+                    f'Coinbase acima do permitido: {coinbase.amount:.2f} KUR '
+                    f'(máximo {max_reward:.2f} KUR)'
+                )
+
+            # IDs já confirmados na cadeia (anti-replay de bloco externo)
+            chain_tx_ids = {
+                existing_tx.transaction_id
+                for existing_block in self.chain
+                for existing_tx in existing_block.transactions
+            }
+
+            seen_ids = set()
+            for tx in block.transactions[1:]:
+                if tx.transaction_id in seen_ids:
+                    raise ValueError('Transação repetida no bloco')
+                seen_ids.add(tx.transaction_id)
+
+                if tx.transaction_id not in pending_ids:
+                    raise ValueError(
+                        f'Transação {tx.transaction_id[:16]}... não está na '
+                        'mempool; peça um novo template'
+                    )
+
+                if tx.transaction_id in chain_tx_ids:
+                    raise ValueError(
+                        f'Transação {tx.transaction_id[:16]}... já foi minerada'
+                    )
+
+            if self.get_total_supply() + coinbase.amount > TOTAL_SUPPLY_CAP + 0.01:
+                raise ValueError('Supply cap excedido pela coinbase')
+
+            # ─── Entra na cadeia ───────────────────────────────
+            block.hash = calculated
+            self.chain.append(block)
+
+            mined_ids = {tx.transaction_id for tx in block.transactions[1:]}
+            with self._mempool_lock:
+                self.pending_transactions = [
+                    tx for tx in self.pending_transactions
+                    if tx.transaction_id not in mined_ids
+                ]
+
+            self.adjust_difficulty()
+
+            print(f'[OK] Bloco #{block.index} aceito do minerador '
+                  f'(nonce {block.proof}, dificuldade {block.difficulty})')
+
+            self._emit('on_block_mined', block)
+
+            return block
+
     def _proof_of_work(self, index: int, previous_hash: str,
                        timestamp: float, tx_dicts: list,
                        merkle_root: str) -> int:
@@ -1035,8 +1241,9 @@ class Blockchain:
 
         Diferente do consenso ingênuo de "cadeia mais longa", o trabalho
         acumulado considera a DIFICULDADE de cada bloco. Um bloco com
-        difficulty=4 requer 2^4 = 16 hashes esperados, enquanto
-        difficulty=1 requer apenas 2^1 = 2 hashes.
+        difficulty=4 requer 16^4 = 65.536 hashes esperados, enquanto
+        difficulty=1 requer apenas 16 hashes — e a parte fracionária da
+        dificuldade entra como fator (ver CryptoUtils.expected_hashes).
 
         Isso impede que um atacante mine blocos com dificuldade baixa
         e apresente uma cadeia mais "longa" que a legítima.
@@ -1047,7 +1254,7 @@ class Blockchain:
         total_work = 0.0
         for block in chain:
             block_diff = block.difficulty if block.difficulty is not None else self.difficulty
-            total_work += 2 ** block_diff
+            total_work += CryptoUtils.expected_hashes(block_diff)
         return total_work
 
     def resolve_conflicts(self, other_chains: List[List[dict]]) -> bool:
@@ -1163,7 +1370,7 @@ class Blockchain:
         Returns:
             True se a cadeia é válida para consenso
         """
-        from config import MIN_ACCEPTABLE_DIFFICULTY, MAX_DIFFICULTY_JUMP
+        from config import MIN_ACCEPTABLE_DIFFICULTY
 
         if not chain:
             return False

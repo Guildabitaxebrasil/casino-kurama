@@ -1,46 +1,50 @@
 #!/usr/bin/env python3
 """
-Minerador automático da KuramaChain — um bloco a cada 10 minutos.
+Minerador da KuramaChain — Proof of Work na CPU, como no Bitcoin/Monero.
 
-O minerador não guarda uma cópia da cadeia: ele conversa com o nó que já
-está rodando (`python run.py` ou `python start_dev.py`) pelo endpoint
-`POST /mine`, que faz o Proof of Work e paga a recompensa. Assim a cadeia,
-a mempool, a EVM e o explorer continuam com uma única fonte de verdade.
+O nó entrega o bloco candidato (`GET /mining/template`) e o minerador
+procura o nonce aqui, na CPU, até o hash começar com o número de zeros
+exigido pela dificuldade. Quando acha, entrega o bloco pronto
+(`POST /mining/submit`) e recomeça no próximo bloco. O nó só valida —
+quem faz o trabalho é este processo.
 
-O ritmo é por "slot", como o alvo de 10 minutos do Bitcoin: o próximo
-bloco só é minerado quando `timestamp_do_último_bloco + intervalo` chega.
-Se o nó estiver atrasado (PoW demorou, nó reiniciou), o bloco sai na hora
-e a contagem seguinte parte do bloco novo.
+Não há intervalo nem "próximo bloco agendado": igual ao Bitcoin, você
+mina sem parar e a dificuldade (que o nó reajusta mirando 10 minutos por
+bloco) é quem controla o ritmo.
 
 Uso:
     # Terminal 1 — o nó
     python run.py --load
 
-    # Terminal 2 — o minerador (600s = 10 min por bloco)
+    # Terminal 2 — o minerador (Ctrl+C para parar)
     python miner.py
 
     # A recompensa vai para um endereço específico
     python miner.py --address 15ZK...
 
-    # Outro ritmo, ou um teste rápido
-    python miner.py --interval 30
-    python miner.py --blocks 2 --interval 5
+    # Minerar N blocos e sair (teste)
+    python miner.py --blocks 2
 
 Opções:
     --url       URL do nó (padrão: detecta http/https em localhost:<port>)
     --port      porta do nó quando --url não é informado (padrão: 5000)
     --address   endereço que recebe a coinbase (padrão: endereço do nó)
-    --interval  segundos entre blocos (padrão: config.TARGET_BLOCK_TIME = 600)
     --blocks    minera N blocos e sai (padrão: 0 = infinito)
 """
 import argparse
+import hashlib
+import json
 import sys
 import time
 
 import requests
 import urllib3
 
-from config import DEFAULT_PORT, TARGET_BLOCK_TIME
+try:
+    from config import DEFAULT_PORT
+except ImportError:
+    # Minerador baixado sozinho (sem o repositório): mesmo padrão de config.py.
+    DEFAULT_PORT = 5000
 
 # O nó local usa certificado auto-assinado; o minerador fala com ele em
 # localhost. Para uma rede remota com CA própria, informe a URL em https.
@@ -48,9 +52,15 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Tempo de espera entre tentativas quando o nó cai ou está reiniciando.
 RETRY_SECONDS = 15.0
-# Timeout de leitura/probe do nó (o /mine pode demorar se a dificuldade subir).
+# Timeout do probe de descoberta do nó.
 PROBE_TIMEOUT = 3.0
-REQUEST_TIMEOUT = 300.0
+REQUEST_TIMEOUT = 60.0
+
+# Campos que entram no hash do bloco (mesma regra de Block.calculate_hash).
+HASH_FIELDS = ('index', 'timestamp', 'transactions', 'proof',
+               'previous_hash', 'merkle_root')
+
+HEX_DIGITS = '0123456789abcdef'
 
 
 class MinerError(RuntimeError):
@@ -67,6 +77,131 @@ class MinerError(RuntimeError):
             return True
         return self.status == 429 or self.status >= 500
 
+    @property
+    def stale(self) -> bool:
+        """409 = o template ficou velho (outro bloco entrou); só pedir outro."""
+        return self.status == 409
+
+
+# ─── Proof of Work ────────────────────────────────────────────────
+
+def hash_input(block: dict) -> str:
+    """
+    Serializa o bloco como o nó faz: JSON com chaves ordenadas e apenas
+    os campos que entram no hash. É o que garante que o nonce achado
+    aqui seja aceito lá.
+    """
+    return json.dumps({k: block[k] for k in HASH_FIELDS}, sort_keys=True)
+
+
+def block_hash(block: dict) -> str:
+    """Hash SHA-256 do bloco (hex), igual ao Block.calculate_hash do nó."""
+    return hashlib.sha256(hash_input(block).encode('utf-8')).hexdigest()
+
+
+def prepare_pow(block: dict) -> tuple:
+    """
+    Separa o JSON do bloco em prefixo e sufixo em volta do nonce.
+
+    Assim o loop de mineração concatena só o número do nonce a cada
+    tentativa, em vez de serializar o bloco inteiro — é o mesmo atalho
+    que mineradores de verdade usam com o midstate do header.
+    """
+    encoded = hash_input({**block, 'proof': 0})
+    marker = '"proof": 0'
+    at = encoded.index(marker)
+    prefix = encoded[:at + len('"proof": ')].encode('utf-8')
+    suffix = encoded[at + len(marker):].encode('utf-8')
+    return prefix, suffix
+
+
+def difficulty_digits(difficulty: float) -> tuple:
+    """
+    Converte a dificuldade em (zeros, teto do dígito seguinte).
+
+    Mesma regra do CryptoUtils.difficulty_digits do nó: o hash começa com
+    `zeros` zeros hex e o dígito seguinte é <= teto (0-15). O teto permite
+    dificuldade fracionária, que o nó usa para mirar 10 minutos por bloco
+    (com zeros inteiros cada degrau é 16x — grosso demais).
+    """
+    value = max(0.0, float(difficulty))
+    zeros = int(value)
+    if zeros >= 64:
+        return 64, 0
+    frac = value - zeros
+    cap = int(round(16 ** (1.0 - frac))) - 1
+    return zeros, min(15, max(0, cap))
+
+
+def is_valid_hash(hash_hex: str, difficulty: float) -> bool:
+    """True se o hash atende à dificuldade (regra do nó)."""
+    zeros, cap = difficulty_digits(difficulty)
+    if len(hash_hex) <= zeros:
+        return False
+    # Hex minúsculo de tamanho fixo: comparar string = comparar número.
+    return hash_hex[:zeros + 1] <= '0' * zeros + HEX_DIGITS[cap]
+
+
+def format_hashrate(hashes_per_second: float) -> str:
+    if hashes_per_second >= 1_000_000:
+        return f'{hashes_per_second / 1_000_000:.2f} MH/s'
+    if hashes_per_second >= 1_000:
+        return f'{hashes_per_second / 1_000:.1f} kH/s'
+    return f'{hashes_per_second:.0f} H/s'
+
+
+def solve(block: dict, out=print, report_seconds: float = 10.0) -> int:
+    """
+    Procura o nonce que satisfaz a dificuldade do bloco (PoW na CPU).
+
+    Args:
+        block: Template do bloco (com index, timestamp, transactions,
+               previous_hash, merkle_root e difficulty)
+        out: função de saída (para testes)
+        report_seconds: intervalo do relatório de hashrate
+
+    Returns:
+        O nonce encontrado
+    """
+    difficulty = float(block['difficulty'])
+    zeros, cap = difficulty_digits(difficulty)
+    prefix, suffix = prepare_pow(block)
+    # Um único prefixo limite: os `zeros` zeros + o teto do próximo dígito.
+    limit = '0' * zeros + HEX_DIGITS[cap]
+    # Só os primeiros `zeros + 1` caracteres importam para o PoW.
+    head = zeros + 1
+    sha256 = hashlib.sha256
+
+    nonce = 0
+    attempts = 0
+    started = time.time()
+    last_report = started
+
+    while True:
+        digest = sha256(prefix + str(nonce).encode('utf-8') + suffix).hexdigest()
+        attempts += 1
+
+        if digest[:head] <= limit:
+            elapsed = max(time.time() - started, 1e-9)
+            out(f'[OK] Nonce encontrado em {attempts:,} tentativas '
+                f'({format_hashrate(attempts / elapsed)}, {elapsed:.1f}s): '
+                f'{digest[:20]}...')
+            return nonce
+
+        nonce += 1
+
+        # Relatório periódico sem pesar no loop (a cada 65.536 hashes).
+        if attempts % 65536 == 0:
+            now = time.time()
+            if now - last_report >= report_seconds:
+                elapsed = max(now - started, 1e-9)
+                out(f'[HASH] {attempts:,} tentativas | '
+                    f'{format_hashrate(attempts / elapsed)} | '
+                    f'dificuldade {difficulty:.2f}')
+                last_report = now
+
+
+# ─── Cliente do nó ────────────────────────────────────────────────
 
 class NodeClient:
     """Cliente HTTP mínimo para o nó da KuramaChain."""
@@ -107,17 +242,14 @@ class NodeClient:
         """Altura atual da cadeia (nº de blocos incluindo o gênese)."""
         return int(self._request('GET', '/stats')['blocks'])
 
-    def last_block(self) -> dict:
-        """Último bloco da cadeia (vazio se a cadeia não existir)."""
-        count = self.block_count()
-        if count <= 0:
-            return {}
-        return self._request('GET', f'/api/blocks/{count - 1}')
+    def template(self, miner_address: str = None) -> dict:
+        """Pede ao nó o bloco candidato para resolver o PoW."""
+        params = {'address': miner_address} if miner_address else None
+        return self._request('GET', '/mining/template', params=params)
 
-    def mine(self, miner_address: str = None) -> dict:
-        """Executa `POST /mine` e devolve a resposta do nó."""
-        payload = {'miner_address': miner_address} if miner_address else {}
-        return self._request('POST', '/mine', json=payload)
+    def submit(self, block: dict) -> dict:
+        """Entrega ao nó o bloco com o nonce já resolvido."""
+        return self._request('POST', '/mining/submit', json=block)
 
 
 def resolve_base_url(explicit_url: str = None, port: int = DEFAULT_PORT) -> str:
@@ -149,91 +281,72 @@ def resolve_base_url(explicit_url: str = None, port: int = DEFAULT_PORT) -> str:
     )
 
 
-def seconds_until_next_slot(last_timestamp: float, interval: float,
-                            now: float = None) -> float:
-    """
-    Segundos até o próximo bloco. Retorna 0 se o slot já passou.
-
-    É o equivalente ao alvo de 10 minutos do Bitcoin: cada bloco abre um
-    slot de `interval` segundos a partir do timestamp do bloco anterior.
-    """
-    if last_timestamp is None:
-        return 0.0
-    now = time.time() if now is None else now
-    return max(0.0, float(last_timestamp) + float(interval) - float(now))
-
-
-def _clock(timestamp: float) -> str:
-    return time.strftime('%H:%M:%S', time.localtime(timestamp))
-
-
-def _duration(seconds: float) -> str:
-    seconds = int(round(seconds))
-    return f'{seconds // 60:02d}:{seconds % 60:02d}'
-
+# ─── Loop de mineração ────────────────────────────────────────────
 
 def mine_forever(client: NodeClient, address: str = None,
-                 interval: float = TARGET_BLOCK_TIME, max_blocks: int = 0,
-                 sleep=time.sleep, out=print) -> int:
+                 max_blocks: int = 0, out=print,
+                 sleep=time.sleep) -> int:
     """
-    Loop de mineração. Minera até `max_blocks` blocos (0 = infinito) e
-    devolve quantos blocos foram minerados.
+    Minera sem parar: pede o template, resolve o PoW e entrega o bloco.
 
-    Reconsulta o último bloco a cada volta para respeitar blocos que
-    chegaram de fora (UI, P2P) e para se realinhar após uma queda do nó.
+    Devolve quantos blocos foram aceitos pelo nó. `max_blocks` = 0
+    minera até ser interrompido.
     """
     mined = 0
-    last_timestamp = None
 
     while max_blocks <= 0 or mined < max_blocks:
-        # Alinha com o último bloco conhecido pelo nó.
         try:
-            latest = client.last_block()
-            last_timestamp = latest.get('timestamp', last_timestamp)
+            template = client.template(address)
         except MinerError as exc:
             if not exc.retryable:
                 raise
             out(f'[WARN] {exc}')
+            out(f'[WAIT] Nova tentativa em {RETRY_SECONDS:.0f}s...')
+            sleep(RETRY_SECONDS)
+            continue
 
-        wait = seconds_until_next_slot(last_timestamp, interval)
-        if wait > 0:
-            out(f'[WAIT] Próximo bloco em {_duration(wait)} '
-                f'(às {_clock(time.time() + wait)})')
-            sleep(wait)
+        pending = max(len(template.get('transactions', [])) - 1, 0)
+        out(f'\n[MINE] Bloco #{template["index"]} | '
+            f'dificuldade {float(template["difficulty"]):.2f} | '
+            f'{pending} tx na mempool | '
+            f'recompensa {float(template.get("reward", 0)):.2f} KUR')
+
+        template['proof'] = solve(template, out=out)
+        template['hash'] = block_hash(template)
 
         try:
-            result = client.mine(address)
+            result = client.submit(template)
         except MinerError as exc:
+            if exc.stale:
+                # Outro bloco entrou na frente; o nó vai dar um novo template.
+                out(f'[WARN] {exc}')
+                continue
             if not exc.retryable:
                 raise
             out(f'[WARN] {exc}')
-            out(f'[WAIT] Nova tentativa em {int(RETRY_SECONDS)}s...')
+            out(f'[WAIT] Nova tentativa em {RETRY_SECONDS:.0f}s...')
             sleep(RETRY_SECONDS)
             continue
 
         block = result.get('block') or {}
-        last_timestamp = block.get('timestamp', time.time())
         mined += 1
-
-        out(f'[OK] Bloco #{block.get("index", "?")} minerado | '
+        out(f'[OK] Bloco #{block.get("index", "?")} aceito pelo nó | '
             f'hash {str(block.get("hash", ""))[:16]}... | '
             f'recompensa {float(result.get("total_reward", 0)):.2f} KUR | '
-            f'saldo {float(result.get("miner_balance", 0)):.2f} KUR | '
-            f'dificuldade {result.get("difficulty", "?")}')
+            f'saldo {float(result.get("miner_balance", 0)):.2f} KUR')
 
     return mined
 
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
-        description='Minerador automático da KuramaChain (1 bloco a cada 10 min)',
+        description='Minerador da KuramaChain (Proof of Work na CPU)',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Exemplos:
-  python miner.py                          # 10 min por bloco, recompensa do nó
-  python miner.py --address 15ZK...        # recompensa para sua carteira
-  python miner.py --interval 30            # 30 s por bloco
-  python miner.py --blocks 2 --interval 5  # teste rápido: 2 blocos
+  python miner.py                       # minera sem parar, recompensa do nó
+  python miner.py --address 15ZK...     # recompensa para sua carteira
+  python miner.py --blocks 2            # minera 2 blocos e sai
         """,
     )
     parser.add_argument('--url', default=None,
@@ -242,8 +355,6 @@ Exemplos:
                         help=f'Porta do nó quando --url não é usado (default: {DEFAULT_PORT})')
     parser.add_argument('--address', default=None,
                         help='Endereço que recebe a recompensa (default: endereço do nó)')
-    parser.add_argument('--interval', type=float, default=TARGET_BLOCK_TIME,
-                        help=f'Segundos entre blocos (default: {TARGET_BLOCK_TIME:.0f})')
     parser.add_argument('--blocks', type=int, default=0,
                         help='Minera N blocos e sai (default: 0 = infinito)')
     return parser.parse_args(argv)
@@ -252,9 +363,6 @@ Exemplos:
 def main(argv=None) -> int:
     args = parse_args(argv)
 
-    if args.interval <= 0:
-        print('[ERR] --interval deve ser maior que zero.')
-        return 2
     if args.blocks < 0:
         print('[ERR] --blocks não pode ser negativo.')
         return 2
@@ -269,24 +377,23 @@ def main(argv=None) -> int:
     client = NodeClient(base_url)
     try:
         height = client.block_count()
+        tip = client.template(args.address)
     except MinerError as exc:
         print(f'[ERR] {exc}')
         return 2
 
-    pace = (f'{args.interval / 60:.1f} min'.replace('.0 min', ' min')
-            if args.interval >= 60 else f'{args.interval:.0f}s')
-    print(f'\n[MINER] KuramaChain — um bloco a cada {pace}')
-    print(f'   Nó:        {base_url}')
-    print(f'   Blocos:    {height}')
-    print(f'   Intervalo: {args.interval:.0f}s')
+    print('\n[MINER] KuramaChain — Proof of Work na CPU')
+    print(f'   Nó:         {base_url}')
+    print(f'   Blocos:     {height}')
+    print(f'   Dificuldade: {float(tip["difficulty"]):.2f} zeros')
     print(f'   Recompensa: {args.address or "endereço do nó"}')
     if args.blocks:
-        print(f'   Limite:    {args.blocks} bloco(s)')
+        print(f'   Limite:     {args.blocks} bloco(s)')
     print('   Ctrl+C para parar.\n')
 
     try:
         mined = mine_forever(client, address=args.address,
-                             interval=args.interval, max_blocks=args.blocks)
+                             max_blocks=args.blocks)
     except KeyboardInterrupt:
         print('\n[STOP] Minerador encerrado pelo usuário.')
         return 0
@@ -294,7 +401,7 @@ def main(argv=None) -> int:
         print(f'\n[ERR] {exc}')
         return 1
 
-    print(f'\n[DONE] {mined} bloco(s) minerado(s).')
+    print(f'\n[DONE] {mined} bloco(s) aceito(s) pelo nó.')
     return 0
 
 

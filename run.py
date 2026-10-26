@@ -131,8 +131,10 @@ Exemplos:
     # Configuração do servidor
     parser.add_argument('--port', type=int, default=DEFAULT_PORT,
                         help=f'Porta do servidor (default: {DEFAULT_PORT})')
-    parser.add_argument('--difficulty', type=int, default=DEFAULT_DIFFICULTY,
-                        help=f'Dificuldade do PoW (default: {DEFAULT_DIFFICULTY})')
+    parser.add_argument('--difficulty', type=float, default=None,
+                        help='Dificuldade do PoW — aceita fração (ex.: 6.15). '
+                             f'Com --load, o padrão é manter a salva; sem '
+                             f'--load, {DEFAULT_DIFFICULTY}')
     parser.add_argument('--load', action='store_true',
                         help='Carregar blockchain salva')
 
@@ -170,10 +172,16 @@ def run_single_node(args):
     if args.load and os.path.exists(CHAIN_FILE):
         print("[DIR] Carregando blockchain do arquivo...")
         blockchain = Blockchain.load_from_file(CHAIN_FILE)
-        blockchain.difficulty = args.difficulty
+        # A dificuldade salva é a que o retarget calculou; sobrescrevê-la
+        # com o default a cada restart jogaria os blocos de volta para
+        # segundos. Só muda se o usuário passar --difficulty.
+        if args.difficulty is not None:
+            blockchain.difficulty = args.difficulty
     else:
         print("[NEW] Criando nova blockchain...")
-        blockchain = Blockchain(difficulty=args.difficulty)
+        difficulty = (args.difficulty if args.difficulty is not None
+                      else DEFAULT_DIFFICULTY)
+        blockchain = Blockchain(difficulty=difficulty)
 
     # ─── Identidade do Nó (ECDSA Persistente) ───────────────────
     # Carrega identidade existente ou gera nova.
@@ -280,6 +288,8 @@ def run_single_node(args):
     print(f"\n[ENDPOINT] Endpoints disponíveis:")
     print(f"   GET  /chain                - Blockchain completa")
     print(f"   POST /mine                 - Minerar bloco")
+    print(f"   GET  /mining/template      - Bloco candidato (mineração externa)")
+    print(f"   POST /mining/submit        - Aceitar bloco minerado na CPU")
     print(f"   POST /transactions/new     - Nova transação")
     print(f"   POST /wallet/new           - Nova carteira")
     print(f"   GET  /balance/<address>    - Saldo")
@@ -353,7 +363,9 @@ def run_interactive(args):
     Args:
         args: Argumentos da linha de comando
     """
-    blockchain = Blockchain(difficulty=args.difficulty)
+    difficulty = (args.difficulty if args.difficulty is not None
+                  else DEFAULT_DIFFICULTY)
+    blockchain = Blockchain(difficulty=difficulty)
     wallets = {}
 
     print(f"\n{'='*60}")

@@ -5,6 +5,7 @@ Usa SHA-256 para hashing e ECDSA (Curva Elíptica) para assinaturas.
 """
 import hashlib
 import json
+import math
 import os
 import base64
 import traceback
@@ -499,29 +500,71 @@ class CryptoUtils:
         return tree[0]
 
     @staticmethod
-    def is_hash_valid(hash_value: str, difficulty: int) -> bool:
+    def difficulty_digits(difficulty: float) -> tuple:
+        """
+        Converte a dificuldade em (zeros, teto do dígito seguinte).
+
+        A regra do PoW é: o hash começa com `zeros` zeros hexadecimais e o
+        dígito logo depois é <= `teto` (0-15). Com `teto` = 15 isso é
+        exatamente a regra antiga ("`zeros` zeros"). Teto menor cria
+        degraus de 16^(1/16) ≈ 1,19x, o que permite mirar 10 minutos por
+        bloco — com zeros inteiros cada degrau era 16x (6 zeros ≈ 6 min e
+        7 zeros ≈ 100 min numa CPU doméstica), grosso demais para o alvo.
+
+        Args:
+            difficulty: Dificuldade em "zeros" (pode ser fracionária)
+
+        Returns:
+            (zeros, teto) — teto entre 0 e 15
+        """
+        value = max(0.0, float(difficulty))
+        zeros = int(math.floor(value))
+        if zeros >= 64:
+            # Inalcançável: o hash teria que ser 64 zeros.
+            return 64, 0
+        frac = value - zeros
+        cap = int(round(16 ** (1.0 - frac))) - 1
+        return zeros, min(15, max(0, cap))
+
+    @staticmethod
+    def expected_hashes(difficulty: float) -> float:
+        """
+        Número esperado de hashes para achar um nonce válido.
+
+        Cada zero hex multiplica o trabalho por 16; o teto do dígito
+        seguinte ajusta a fração (teto 15 = 1, teto 0 = 16x mais trabalho).
+        É o "trabalho" usado pelo consenso da cadeia.
+        """
+        zeros, cap = CryptoUtils.difficulty_digits(difficulty)
+        return 16.0 ** zeros * (16.0 / (cap + 1))
+
+    @staticmethod
+    def is_hash_valid(hash_value: str, difficulty: float) -> bool:
         """
         Verifica se um hash atende ao requisito de dificuldade (proof of work).
-        Um hash é válido se começa com 'difficulty' zeros.
 
-        Usa CryptoUtils.hash_equals() (TEMPO CONSTANTE) para prevenir
-        timing attacks que poderiam vazar informação sobre o hash.
+        O hash (hex) é válido se começa com `zeros` zeros e o próximo
+        dígito é <= teto — ver CryptoUtils.difficulty_digits(). Para
+        dificuldade inteira isso equivale a "começa com N zeros".
+
+        A comparação é lexicográfica: com hashes de tamanho fixo em hex
+        minúsculo, comparar strings é o mesmo que comparar os números.
 
         No Bitcoin, a dificuldade aumenta para que novos blocos sejam
         minerados aproximadamente a cada 10 minutos.
 
         Args:
             hash_value: Hash a verificar (string hex)
-            difficulty: Número de zeros necessários no início
+            difficulty: Dificuldade exigida (pode ser fracionária)
 
         Returns:
             True se o hash é válido para a dificuldade atual
         """
-        target = '0' * difficulty
-        if len(hash_value) < difficulty:
+        zeros, cap = CryptoUtils.difficulty_digits(difficulty)
+        if len(hash_value) <= zeros:
             return False
-        # Comparação em TEMPO CONSTANTE — previne timing attack
-        return CryptoUtils.hash_equals(hash_value[:difficulty], target)
+        limit = '0' * zeros + '0123456789abcdef'[cap]
+        return hash_value[:zeros + 1].lower() <= limit
 
     @staticmethod
     def keccak256(data: bytes) -> str:
