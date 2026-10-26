@@ -4,8 +4,10 @@ export interface Block {
   previous_hash: string;
   hash: string;
   merkle_root: string;
-  nonce: number;
-  difficulty: number;
+  /** Nonce descoberto pelo Proof of Work (a API serializa este campo como `proof`). */
+  proof: number;
+  /** Ausente no bloco gênese. */
+  difficulty?: number;
   transactions: Transaction[];
 }
 

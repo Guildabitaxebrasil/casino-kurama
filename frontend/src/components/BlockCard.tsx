@@ -23,7 +23,7 @@ export default function BlockCard({ block }: Props) {
         </div>
         <div className="text-right flex flex-col items-end gap-1">
           <span className="text-xs bg-kur-green/10 text-kur-green px-2 py-0.5 rounded-full font-medium">{txCount} tx{txCount !== 1 ? 's' : ''}</span>
-          <span className="text-xs text-kur-text-muted">nonce: {block.nonce}</span>
+          <span className="text-xs text-kur-text-muted">nonce: {block.proof}</span>
         </div>
       </div>
     </Link>

@@ -88,7 +88,7 @@ export default function BlockDetails() {
         <FieldRow label="Hash do Bloco" value={block.hash} link={`/block/${block.hash}`} />
         <FieldRow label="Previous Hash" value={block.previous_hash} link={block.previous_hash ? `/block/${block.previous_hash}` : ''} />
         <FieldRow label="Merkle Root" value={block.merkle_root || block.merkleRoot || '-'} />
-        <FieldRow label="Nonce" value={String(block.nonce)} />
+        <FieldRow label="Nonce" value={block.proof !== undefined ? String(block.proof) : '-'} />
         <FieldRow label="Dificuldade" value={String(block.difficulty || '-')} />
         <FieldRow label="Timestamp" value={block.timestamp ? new Date(block.timestamp * 1000).toLocaleString('pt-BR') : '-'} mono={false} />
         <FieldRow label="Transações" value={String(txs.length)} mono={false} />
