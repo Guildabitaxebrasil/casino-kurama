@@ -16,7 +16,7 @@
 <p align="center">
   <a href="#-visão-geral">Visão Geral</a> •
   <a href="#-arquitetura">Arquitetura</a> •
-  <a href="#-quick-start">Quick Start</a> •
+  <a href="#-primeiros-passos">Primeiros Passos</a> •
   <a href="#-blockchain">Blockchain</a> •
   <a href="#%EF%B8%8F-lightning-network">Lightning</a> •
   <a href="#-api-endpoints">API</a> •
@@ -64,25 +64,51 @@ O **KuramaChain** é uma blockchain própria escrita em Python com dois grandes 
 
 ---
 
-## 🚀 Quick Start
+## 🚀 Primeiros passos
 
-### Backend (Servidor Principal)
+Do zero ao primeiro bloco minerado em poucos minutos. Você precisa de
+**Python 3.10+** e, só para o explorer, **Node 18+**.
+
+### 1. Clone e instale
 
 ```bash
-# 1. Instalar dependências
+git clone https://github.com/Guildabitaxebrasil/casino-kurama.git
+cd casino-kurama
 pip install -r requirements.txt
-
-# 2. Iniciar servidor da blockchain + lightning
-python run.py --port 5000
-
-# 3. Rede multi-nó (3 nós simultâneos)
-python run.py --network --nodes 3
-
-# 4. Demonstração automatizada
-python run.py --demo
 ```
 
-### Frontend (Blockchain Explorer)
+### 2. Suba o nó — Terminal 1
+
+```bash
+python run.py --load
+```
+
+O nó atende em `https://localhost:5000` com certificado auto-assinado, então o
+navegador avisa na primeira visita — é esperado em desenvolvimento (use
+`--no-ssl` para HTTP puro). `--load` continua a cadeia de
+`data/blockchain.json` com a dificuldade salva; sem ele, o nó começa uma
+cadeia nova.
+
+### 3. Minere — Terminal 2
+
+```bash
+python miner.py
+```
+
+O minerador encontra o nó sozinho, pede o bloco candidato e faz o PoW na sua
+CPU, emendando bloco após bloco (Ctrl+C para parar). Sem `--address`, a
+recompensa vai para o endereço do nó.
+
+### 4. Receba em uma carteira sua (opcional)
+
+Crie uma carteira em `POST /wallet/new` ou na aba **Carteira → Gerar Carteira**
+do explorer e passe o endereço para o minerador:
+
+```bash
+python miner.py --address 15ZK...
+```
+
+### 5. Abra o explorer — Terminal 3
 
 ```bash
 cd frontend
@@ -90,6 +116,39 @@ npm install
 npm run dev
 # Acesse http://localhost:5173
 ```
+
+### Sem clonar nada (Windows)
+
+O `baixar_minerador.bat` baixa só o minerador e já começa a minerar — veja a
+seção **Baixar o minerador** mais abaixo.
+
+### Se algo der errado
+
+| Sintoma | Causa provável | O que fazer |
+|---------|----------------|-------------|
+| `nenhum nó respondendo em localhost:5000` | nó parado ou em outra porta | suba `python run.py --load`; se a porta mudou, use `python miner.py --port 5001` |
+| Todo bloco volta `HTTP 409` | minerador antigo (sem dificuldade fracionária) | baixe o `miner.py` de novo: nó e minerador precisam da mesma versão |
+| Blocos levando ~10 min cada | é o alvo do reajuste de dificuldade | normal; para testar rápido use `python run.py --difficulty 3` |
+| Aviso de certificado no navegador | certificado auto-assinado de dev | aceite o aviso, ou suba o nó com `--no-ssl` |
+| `Address already in use` | outra instância ocupando a porta 5000 | `python run.py --port 5001` e `python miner.py --port 5001` |
+| `python` não encontrado ou versão antiga | Python abaixo de 3.10 | instale 3.10+ marcando "Add python.exe to PATH" |
+
+### Rede multi-nó e demo
+
+```bash
+python run.py --network --nodes 3   # 3 nós simultâneos
+python run.py --demo                # demonstração automatizada
+```
+
+### 📸 Explorer
+
+| **Dashboard** | **Explorer** |
+|:---:|:---:|
+| ![Dashboard com estatísticas da cadeia e gráfico de crescimento](docs/screenshots/dashboard.png) | ![Lista de blocos com paginação](docs/screenshots/explorer.png) |
+| **Carteira** | **Transações** |
+| ![Saldo e histórico de um endereço](docs/screenshots/wallet.png) | ![Tabela de transações com filtros](docs/screenshots/transactions.png) |
+| **Rede P2P** | **DeFi** |
+| ![Nós da rede e status](docs/screenshots/network.png) | ![Camada EVM, tokens e swap](docs/screenshots/defi.png) |
 
 ---
 
@@ -495,6 +554,7 @@ kuramachain/
 ├── node/                          # Gerenciamento de nós
 │   └── node_manager.py            # Rede multi-nó
 ├── frontend/                      # Blockchain Explorer (React)
+├── docs/screenshots/              # Prints do explorer usados neste README
 ├── tests/                         # Testes
 ├── config.py                      # Configurações centralizadas
 ├── run.py                         # Ponto de entrada
